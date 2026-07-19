@@ -22,6 +22,29 @@ da Fase 3 ou 4.
 Direção definida (disparos é produto horizontal; CRM é cliente dela
 — ver D3), mas o desenho fino da API entre eles será feito na Fase 5.
 
+### P5 — `ensureSchema()` não bootstrapa um banco vazio do zero (19/07/2026)
+Contexto: ao validar o fix do `npm start` (Fase 0 item 3), subimos o
+`casagora-router` contra um Postgres 17 descartável (vazio) para
+confirmar boot real. `ensureSchema()` (roda a cada start, `src/server.js`)
+quebrou em pelo menos 2 pontos: (1) tenta `alter table app_settings add
+primary key (tenant_id, key)` sem nunca ter adicionado a coluna
+`tenant_id` antes; (2) tenta `alter table lead_crm_import add column...`
+numa tabela que nunca é criada em lugar nenhum do código — `lead_crm_import`
+só existe em produção porque foi criada manualmente fora do
+`ensureSchema()` em algum momento não documentado. Não fomos atrás de
+mais gaps além desses dois (achados suficientes para confirmar o
+padrão; não é exaustivo).
+Consequência prática: banco de produção nunca pode ser recriado do
+zero só rodando o app — sempre precisa de um dump/snapshot do schema
+atual como ponto de partida. Isso não bloqueia produção (que já tem o
+schema acumulado) nem o fix do `npm start` em si (o boot chega a
+conectar no banco e rodar migrações reais — o bug do path está
+confirmado corrigido), mas é uma lacuna real de "rede de segurança".
+DECIDIR: fazer um `pg_dump --schema-only` de produção e commitar como
+baseline de schema versionado (útil pra Fase 4 também), ou aceitar que
+dev local sempre depende de um snapshot do banco e não tentar
+bootstrapar do zero.
+
 ## ✅ Tomadas
 
 ### D1 — Sistema de disparos nasce FORA do CRM (18/07/2026)
