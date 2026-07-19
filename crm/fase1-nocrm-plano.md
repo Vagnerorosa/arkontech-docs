@@ -159,21 +159,25 @@ depois dessa janela. Incrementos 4-5 podem seguir em paralelo ou depois, são de
 
 ## 4. O que precisa de decisão do Vagner
 
-1. **Confirmar que a equipe da Casagora está OK operando 100% pelo Imoviz** (sem olhar leads
-   pelo app do noCRM) — pré-requisito real do Incremento 1, é uma pergunta de processo, não
-   de código.
+> **Atualização 19/07/2026 (ver D11 em DECISOES.md):** a pergunta 1 abaixo já foi
+> respondida, e a resposta muda o escopo desta fase. A equipe da Casagora **ainda gerencia
+> negócios pelo noCRM no dia a dia** — não por hábito, mas porque a base histórica
+> (comentários e anexos por lead) nunca foi trazida pro Imoviz. Os incrementos 3-5 desta
+> fase (desligar sync de agentes/usuários/leads/webhook) ficam **bloqueados** até essa base
+> ser migrada. Novo plano de migração de base: `crm/fase1b-migracao-base.md`. A pergunta 4
+> (uso real de `lead_crm_import`) também é respondida lá.
+
+1. ✅ **Confirmar que a equipe da Casagora está OK operando 100% pelo Imoviz?** Respondida:
+   **não ainda** — falta a base histórica (comentários/anexos). Ver `fase1b-migracao-base.md`.
 2. **Cadastro de corretor novo vai passar a ser manual (`/admin/usuarios`) na Casagora?**
-   Pré-requisito do Incremento 3 (seção 1.3) — se a resposta for "não, queremos manter
-   automação", a alternativa é reimplementar o sync de agentes num formato que não dependa
-   do noCRM (fora do escopo padrão desta fase, precisaria de planejamento próprio).
+   Pré-requisito do Incremento 3 (seção 1.3) — segue em aberto, mas o Incremento 3 já está
+   bloqueado pela pergunta 1 de qualquer forma, não é urgente responder agora.
 3. **O que acontece com a assinatura/conta do noCRM depois do desligamento completo?**
    Cancelar, manter como arquivo histórico read-only, ou manter ativa por algum tempo como
-   rede de segurança? Não é uma decisão técnica — depende de contrato/custo com o noCRM, que
-   não está em nenhum código ou documento acessível nesta investigação.
-4. **`lead_crm_import` ainda é consultado por alguma tela ativa?** Antes do Incremento 4,
-   vale uma checagem de código dedicada (grep por `lead_crm_import` no frontend/rotas de
-   leitura) — não fiz essa verificação aprofundada nesta sessão de levantamento, é a
-   principal lacuna deste documento.
+   rede de segurança? Segue em aberto — esboço de prazo (rede de 60-90 dias antes de
+   cancelar) proposto em `fase1b-migracao-base.md`, mas a decisão final é do Vagner.
+4. ✅ **`lead_crm_import` ainda é consultado por alguma tela ativa?** Investigado — ver
+   `fase1b-migracao-base.md`.
 5. **O que fazer com o webhook `/webhooks/nocrm` no encerramento** — desativar do lado do
    noCRM (parar de enviar) antes ou depois de cancelar a conta? Depende da resposta à
-   pergunta 3.
+   pergunta 3, segue em aberto.

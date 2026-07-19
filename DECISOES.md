@@ -85,3 +85,47 @@ ninguém pediu e que a rotina de refresh diário já resolve de forma mais
 realista (schema idêntico à produção, não uma aproximação). Reabrir só
 se a Fase 4 (modularização) precisar de fato de um ambiente 100% do
 zero para testes automatizados.
+
+### D10 — Fase 1A (auth): respostas do Vagner às perguntas em aberto
+(19/07/2026). Resolve as 6 perguntas de `crm/fase1-auth-plano.md`
+(seção 5):
+- **Q1 — `/admin` e `/app` legados**: manter como estão, **não**
+  unificar com o mecanismo v2 novo. Resolve a contradição a favor do
+  `DIRETRIZES.md §14` ("compatível, não precisa migrar"); o texto
+  original do `PLANO-ESTRANGULAMENTO.md` (Fase 1A, passo 3) fica
+  superado. O "Incremento 6" do plano de auth (unificação) não é mais
+  "pendente de decisão" — está descartado.
+- **Q2 — janela do Incremento 3** (o dual-deploy backend+frontend):
+  madrugada de dia útil, com golden master antes e depois. Precaução
+  extra mantida mesmo com a leitura de que sessões abertas não seriam
+  interrompidas no momento do deploy.
+- **Q3 — aviso aos usuários** sobre a expiração gradual de sessões
+  antigas: sem banner. Fica silenciosa/individual, em até 30 dias,
+  como já descrito no plano.
+- **Q4 — rate limit no login**: 10 tentativas / 15 min confirmado,
+  sem alteração.
+- **Q5 — MFA/Passkeys**: confirmado fora do escopo da Fase 1A —
+  continua no backlog do `DIRETRIZES.md §3`.
+- **Q6 — os 3 gates de UX no cookie `imoviz_user`** (onboarding,
+  `/analises/fila`, suspensão por inadimplência): aceitos como estão
+  por ora. Registrado como item de follow-up para **depois** da
+  Fase 1A — não bloqueia nada dela.
+
+### D11 — Fase 1B (noCRM): escopo ampliado para migração de base antes
+do desligamento (19/07/2026). Contexto: `crm/fase1-nocrm-plano.md`
+assumia que bastava confirmar `nocrm_create_enabled=false` e desligar
+os 4 mecanismos de sync. O Vagner esclareceu o motivo real de a
+Casagora ainda gerenciar negócios pelo noCRM no dia a dia: a base
+histórica — principalmente **comentários** e **anexos de documento**
+por lead — nunca foi trazida para o Imoviz. Desligar sem isso perderia
+o histórico de conversa/documentos de todo lead já trabalhado.
+Fato verificado nesta sessão: o export nativo do noCRM (CSV/Excel)
+inclui comentários (via checkbox de opção no export), mas **não
+inclui anexos** — anexos só são acessíveis via API.
+Escolha: novo escopo da Fase 1B passa a ser migração de base (leads
+históricos + comentários + anexos) e um plano de adoção da equipe,
+**antes** de qualquer desligamento. Os incrementos 3-5 do
+`fase1-nocrm-plano.md` (desligar sync de agentes/usuários/leads/
+webhook) ficam **bloqueados** até a base estar migrada e a equipe
+operando 100% pelo Imoviz — deixam de ser o próximo passo lógico.
+Estratégia de migração detalhada em `crm/fase1b-migracao-base.md`.

@@ -256,31 +256,18 @@ Descrito no `PLANO-ESTRANGULAMENTO.md` original como passo 3 da Fase 1A, mas
 aqui** até a pergunta 5.1 ser respondida — se a resposta for "sim, migrar", este incremento
 volta a ser desenhado numa sessão futura (é um escopo grande: 74 rotas, painel inteiro).
 
-## 5. Perguntas para o Vagner antes de codar
+## 5. Perguntas para o Vagner antes de codar — RESPONDIDAS (19/07/2026, ver D10 em DECISOES.md)
 
-1. **Unificar `/admin`/`/app` (74 rotas) para o novo mecanismo de auth, ou manter como
-   está?** `PLANO-ESTRANGULAMENTO.md` (Fase 1A, passo 3) e `DIRETRIZES.md` (§14, checklist)
-   dizem coisas opostas. Recomendação: manter como está por agora (é single-tenant,
-   propositalmente diferente do resto, e já usa um padrão equivalente — token opaco
-   revogável em `app_sessions`; o ganho de unificar é baixo frente ao risco de mexer no
-   painel operacional da agência). Mas isso muda o escopo real da Fase 1A — precisa decisão
-   explícita, não assumida.
-2. **Incremento 3 (o dual-deploy): janela de manutenção específica, ou "qualquer hora,
-   ninguém percebe" está correto?** A análise acima conclui que sessões abertas não são
-   interrompidas no momento do deploy — só confirmar se essa leitura está certa antes de
-   tratar isso como "pode subir a qualquer hora sem avisar ninguém".
-3. **Vale um aviso passivo (banner) sobre a expiração gradual de sessões antigas**, ou
-   deixar 100% silencioso (cada um só percebe quando, individualmente, seu JWT antigo
-   expirar em até 30 dias)?
-4. **10 tentativas / 15 min de rate limit no login está bom**, ou outro número? (Parâmetro
-   do `express-rate-limit`, fácil de ajustar, só confirmar antes de já subir com um valor.)
-5. **MFA/Passkeys** (backlog do `DIRETRIZES.md §3`) — confirmar que segue fora do escopo da
-   Fase 1A (entendimento atual: sim, é "quando fizer sentido depois", não bloqueia nada aqui).
-6. **Os 3 gates do `middleware.ts` que confiam no cookie `imoviz_user` não-httpOnly**
-   (onboarding, `/analises/fila`, suspensão por inadimplência) — vale um item de follow-up
-   dedicado (fora desta Fase 1A) para movê-los a checar contra o JWT assinado ou uma chamada
-   ao backend, ou o risco é aceitável como está (são gates de UX/fluxo, não de dado — o
-   backend real de cada tela segue escopado por tenant/role via JWT)?
+1. ✅ **Unificar `/admin`/`/app`?** Não — manter como está. Resolve a favor do
+   `DIRETRIZES.md §14`; o passo 3 original da Fase 1A (`PLANO-ESTRANGULAMENTO.md`) fica
+   superado. Incremento 6 (seção 4) descartado, não fica mais "pendente de decisão".
+2. ✅ **Janela do Incremento 3?** Madrugada de dia útil, com golden master antes e depois —
+   precaução mantida mesmo com a leitura de que sessões abertas não seriam interrompidas.
+3. ✅ **Banner de aviso?** Não — expiração fica silenciosa/individual, como descrito.
+4. ✅ **Rate limit 10/15min?** Confirmado, sem alteração — é o que o Incremento 1 implementa.
+5. ✅ **MFA/Passkeys fora do escopo?** Confirmado, backlog do `DIRETRIZES.md §3`.
+6. ✅ **Os 3 gates do cookie `imoviz_user`?** Aceitos como estão por ora. Vira item de
+   follow-up **depois** da Fase 1A — não bloqueia nada dela.
 
 ## Critério de conclusão desta sub-fase (retomado do `PLANO-ESTRANGULAMENTO.md`)
 Uma única geração de auth no código v2 (Incrementos 1-5 concluídos); login em um passo já é
