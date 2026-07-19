@@ -197,3 +197,23 @@ do proxy real, login real em 3 navegadores diferentes). Bug crítico corrigido
 e validado. Gap residual (P4/P6) documentado, não bloqueante, sem prazo
 definido — decisão consciente de não bloquear o deploy de hoje por ele.
 Deploy do dia encerrado com sucesso.
+
+### 20/07/2026 — Reconfirmação pós-P4 (checklist de saúde geral)
+
+Depois do P4 ser fechado (Traefik corrigido, ver `crm/p4-traefik-runbook.md`
+e D13 em `DECISOES.md`), reconfirmado que o deploy de 19/07 continua
+saudável e que a mudança de infra não introduziu nenhuma regressão:
+
+- **19/19 domínios** do checklist do P4 (seção 3 daquele runbook) — status
+  HTTP idêntico ao baseline, incluindo os 2 já quebrados antes (Zentara,
+  `devroutercasagora`, sem regressão nova).
+- **Traefik**: `docker service ps easypanel-traefik` — task estável, sem
+  restart loop. `/api/entrypoints` reconfirmado: `insecure: false`,
+  `trustedIPs` com 22 ranges nos dois entrypoints (`http`/`https`) —
+  config não foi revertida por nenhuma ação do EasyPanel desde ontem.
+- **`casagora_router_api`**: `docker service ps` — estável há 6h na imagem
+  `0.9.324-fase1a-incrementos-1-2-trustproxy-20260719`, sem restart desde
+  o deploy de 19/07.
+
+Nenhuma ação corretiva necessária. Estado de produção confirmado estável
+no dia seguinte ao deploy + à mudança de infra do P4.
