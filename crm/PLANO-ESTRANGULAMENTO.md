@@ -104,15 +104,22 @@ server.js cai de forma mensurável.
 ---
 
 ## FASE 3 — Confirmar mortes e limpar anomalias  [STATUS: pendente]
-1. **Grupo 2 (app legado)**: instrumentar com contador de acessos por
+1. **Regerar o censo completo das rotas** (grupo, método, path, auth,
+   evidência vivo/morto) e salvar em `arkontech-docs/crm/censo-rotas.md`.
+   O censo original de julho/2026 (203 rotas, 19 grupos, citado no
+   cabeçalho deste plano) nunca foi persistido como arquivo — só o
+   resumo condensado sobreviveu (ver DECISOES.md, decisão resolvida
+   19/07/2026). Este passo produz o substituto definitivo, já no
+   lugar certo.
+2. **Grupo 2 (app legado)**: instrumentar com contador de acessos por
    rota durante 2 semanas. Zero acessos → remover. Houve acesso →
    descobrir quem e migrar para o v2 equivalente.
-2. **PATCH /api/v2/crm/tasks/:id órfão**: confirmar se algo cria
+3. **PATCH /api/v2/crm/tasks/:id órfão**: confirmar se algo cria
    tasks por outro mecanismo; senão, remover.
-3. **Role ANALYST**: formalizar nas DIRETRIZES (§3) ou remover do
+4. **Role ANALYST**: formalizar nas DIRETRIZES (§3) ou remover do
    código — sincronizar a lista canônica de roles.
-4. Atualizar ARCHITECTURE.md / API_ROUTES.md / DATABASE.md para a
-   realidade (ou substituí-los por um doc gerado do censo).
+5. Atualizar ARCHITECTURE.md / API_ROUTES.md / DATABASE.md para a
+   realidade (ou substituí-los por um doc gerado do censo do item 1).
 
 Critério: nenhum grupo "incerto" no censo; docs batem com o código.
 

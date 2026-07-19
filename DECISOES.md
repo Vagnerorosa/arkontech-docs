@@ -22,17 +22,6 @@ da Fase 3 ou 4.
 Direção definida (disparos é produto horizontal; CRM é cliente dela
 — ver D3), mas o desenho fino da API entre eles será feito na Fase 5.
 
-### P4 — DIAGNOSTICO.md e censo de rotas nunca foram persistidos (19/07/2026)
-O censo de 203 rotas citado no cabeçalho do `PLANO-ESTRANGULAMENTO.md` foi
-produzido em sessão anterior, mas nunca virou arquivo — busca completa no
-filesystem e no histórico git (todas as branches, stashes) de
-`casagora-sistema` e `casagora-router` não encontrou `DIAGNOSTICO.md` nem
-nenhum arquivo de censo. Só sobrou o resumo condensado já embutido no plano.
-O número de rotas (203) foi reconferido em 19/07/2026 contando
-`app.<method>(` em `casagora-router/src/server.js` — bate exatamente.
-DECIDIR: regerar o censo detalhado (por grupo/rota) como arquivo em
-`crm/` ou aceitar o resumo do plano como suficiente e seguir sem ele.
-
 ## ✅ Tomadas
 
 ### D1 — Sistema de disparos nasce FORA do CRM (18/07/2026)
@@ -64,3 +53,17 @@ conteúdo (tom, contexto), nunca o prompt cru (18/07/2026).
 
 ### D7 — Login social: Google + e-mail/senha via Auth.js no
 lançamento; Apple/Microsoft adiados (18/07/2026).
+
+### D8 — DIAGNOSTICO.md/censo de rotas: não regerar agora, adiado para
+Fase 3 (19/07/2026). Contexto: o censo de 203 rotas citado no
+cabeçalho do `PLANO-ESTRANGULAMENTO.md` foi produzido em sessão
+anterior mas nunca virou arquivo — busca completa no filesystem e no
+histórico git (todas as branches, stashes) de `casagora-sistema` e
+`casagora-router` não encontrou `DIAGNOSTICO.md` nem censo nenhum; só
+sobreviveu o resumo condensado já embutido no plano. Contagem de
+`app.<method>(` em `casagora-router/src/server.js` confirmou as 203
+rotas. Escolha: não bloquear a Fase 0/1 regerando agora; o censo
+completo (grupo, método, path, auth, vivo/morto) vira o item 1 da
+Fase 3, salvo em `crm/censo-rotas.md`, quando fizer mais sentido
+(depois da rede de segurança e das migrações, junto da limpeza de
+anomalias que já depende de mapear rota por rota).
