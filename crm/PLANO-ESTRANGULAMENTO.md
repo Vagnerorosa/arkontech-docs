@@ -24,13 +24,12 @@ de disparos, não este repo diretamente.
 
 ---
 
-## FASE 0 — Rede de segurança  [STATUS: CONCLUÍDA em 19/07/2026 — pendente só o merge para main, decisão do Vagner]
+## FASE 0 — Rede de segurança  [STATUS: CONCLUÍDA em 19/07/2026 — mergeada em main]
 Sem testes hoje. Nada pode ser refatorado no escuro.
 
-Todo o trabalho está na branch `diagnostico` do `casagora-router`
-(commits `7ce37fb` já mergeado via PR #11; `07ccea8`, `2324792`,
-`e0e4c79` ainda não mergeados — merge para `main` é decisão consciente
-do Vagner, não feito automaticamente por design).
+Todo o trabalho entrou em `main` do `casagora-router` via PR:
+`7ce37fb` (item 1, PR #11) e `07ccea8`+`2324792`+`e0e4c79` (itens 2-3,
+PR #12, CI verde, merge autorizado pelo Vagner em 19/07/2026).
 
 1. ✅ **Golden master das rotas vivas** (concluído 19/07/2026, mergeado
    em `main`): script de testes de caracterização que bate nas rotas
