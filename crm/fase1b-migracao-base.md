@@ -4,6 +4,11 @@
 > (`DECISOES.md`): antes de desligar qualquer automação do noCRM, migrar a base histórica
 > (comentários e anexos) e ter a equipe operando 100% pelo Imoviz. Este documento é o
 > levantamento que embasa esse plano.
+>
+> **Atualizado no mesmo dia** (19/07/2026, mais tarde) quando os 2 exports que faltavam
+> chegaram, completando a série de 3 arquivos (145.619 leads, cobertura total set/2019-jul/2026
+> sem buraco). Seção 2 (export CSV) e seção 6 (proposta de corte) foram reescritas com os
+> números finais — ver nota "ATUALIZADO 19/07/2026" em cada uma.
 
 ## 1. O que já está dentro (`lead_crm_import`)
 
@@ -60,48 +65,88 @@ Incremento 4: antes de desligar, confirmar se os relatórios devem passar a ler 
 (a fonte viva) ou se `lead_crm_import` continua existindo só como tabela histórica estática
 depois do desligamento (sem sync, mas ainda consultada).
 
-## 2. O export CSV nativo (arquivo fornecido, 19/07/2026)
+## 2. O export CSV nativo — ATUALIZADO 19/07/2026, base completa
 
-`/root/nocrm-export/nocrm-leads-2026-07-19-ODA4NDg.csv`, ISO-8859-1 → UTF-8, `;` como
-separador, **50.000 linhas de dados, 65 colunas**, todas bem formadas (nenhum erro de parse).
+> **Atualização 19/07/2026 (mesmo dia, mais tarde)**: os 2 arquivos que faltavam chegaram
+> (`...ODA4NDk.csv` e `...ODA4NTA.csv`), completando a série. Toda esta seção foi reescrita
+> com os 3 arquivos somados — os números abaixo substituem a versão anterior (que era baseada
+> só no primeiro arquivo, truncado em agosto/2022). Histórico da versão anterior preservado
+> via git.
 
-### Cobertura real: um recorte truncado, não o histórico completo
+Três arquivos, `/root/nocrm-export/nocrm-leads-2026-07-19-{ODA4NDg,ODA4NDk,ODA4NTA}.csv`,
+ISO-8859-1 → UTF-8, `;` como separador. Colunas variam ligeiramente entre arquivos (65, 68 e
+69 — noCRM só inclui uma coluna no export quando algum registro daquela fatia tem valor nela;
+`Condição`, `Perfil Imóvel Fechado`, `Remind_time` e `Client_folder` aparecem só nos arquivos
+mais recentes). Confirmado por parsing real (`csv.DictReader`, não `wc -l` — o arquivo tem
+campos com quebra de linha embutida, ex. comentários longos em `Description`, então contagem
+de linha crua superestima o total):
 
-O arquivo cobre só **setembro/2019 a agosto/2022**, e a distribuição mensal mostra o corte
-claramente:
+| Arquivo | Linhas de dados |
+|---|---|
+| `...ODA4NDg.csv` | 50.000 |
+| `...ODA4NDk.csv` | 50.000 |
+| `...ODA4NTA.csv` | 45.619 |
+| **Total** | **145.619** |
 
-```
-2022-01: 1618   2022-05: 1780
-2022-02: 1261   2022-06: 1383
-2022-03: 1658   2022-07: 1705
-2022-04: 1703   2022-08:  142   ← cai de ~1700/mês pra 142, no meio do mês
-```
+### Cobertura: completa, sem buraco de período, sem sobreposição de ID
 
-Isso é uma **truncagem no limite de exportação do noCRM (50.000 linhas)**, não um filtro de
-data deliberado — o export simplesmente parou no meio de agosto/2022. **Faltam ~3 anos e
-meio** (setembro/2022 até hoje) neste arquivo.
+**Zero IDs duplicados entre os 3 arquivos** (145.619 linhas = 145.619 IDs únicos) — apesar de
+os arquivos terem faixas de data (`Created_at`) que se sobrepõem entre si (ex.: o 2º arquivo
+começa em 2022-02, dentro do intervalo do 1º; o 3º vai de 2020 a 2026). Isso indica que o
+noCRM não fatiou por data na exportação (ordem de exportação parece ser por ID/critério
+interno, não cronológica) — mas o resultado prático é bom: **nenhum lead apareceu duas vezes**.
 
-### Cruzamento com `lead_crm_import`: praticamente nenhuma sobreposição
+Verificação mês a mês da união dos 3 arquivos, de setembro/2019 (o mês mais antigo observado)
+até julho/2026 (mês corrente): **83 meses no intervalo, 0 meses faltando**. O buraco de
+set/2022–dez/2025 identificado na investigação anterior (quando só o 1º arquivo estava
+disponível) **está fechado** — confirmado, não presumido.
 
-Apenas **6 IDs em comum** entre os 50.000 leads do CSV e os 14.386 registros do banco — as
-duas fontes cobrem períodos quase totalmente diferentes (CSV: 2019-ago/2022; banco: quase só
-2026). **Existe um buraco real de dado para o período de setembro/2022 a dezembro/2025** —
-não coberto nem pelo CSV fornecido, nem pelo sync do banco. Precisa de pelo menos mais um
-export (ou uma chamada de API filtrada por data, se o endpoint `GET /leads` suportar) para
-cobrir esse intervalo antes de a migração de base ser considerada completa.
+### Cruzamento com `lead_crm_import`: cobertura quase total agora
 
-### Status no recorte deste arquivo
+Com os 3 arquivos, **14.372 dos 14.385 registros de `lead_crm_import`** têm o mesmo `ID`
+presente no CSV (99,9% — antes, com só o 1º arquivo, eram 6 IDs em comum). Só **13 leads**
+existem no banco e não aparecem em nenhum dos 3 CSVs (provavelmente criados/sincronizados
+depois do momento exato da exportação — todos com `Created_at` recente, a maioria `todo`).
 
-| Status | Linhas | % |
+Dos 14.372 registros em comum, **3.162 (22%) têm `Status` diferente entre o CSV e o banco** —
+esperado, não é inconsistência de dado: o CSV é uma foto do momento da exportação, `banco
+lead_crm_import` é sincronizado diariamente e reflete o pipeline mais atual. Nas contagens
+abaixo (distribuição de status e proposta de corte), **o status do banco tem prioridade sobre
+o do CSV quando o lead existe nos dois** — é o valor mais recente disponível.
+
+### Distribuição de status — todos os 145.632 leads (145.619 do CSV + 13 só no banco)
+
+Status efetivo (banco tem prioridade sobre CSV nos 14.372 em comum, CSV usado sozinho pro
+resto):
+
+| Status | Leads | % |
 |---|---|---|
-| cancelled | 49.336 | 98,7% |
-| won | 663 | 1,3% |
-| todo | 1 | ~0% |
+| cancelled | 139.845 | 96,0% |
+| standby | 2.518 | 1,7% |
+| todo | 1.631 | 1,1% |
+| won | 1.581 | 1,1% |
+| lost | 57 | ~0% |
+| **Total** | **145.632** | 100% |
 
-(Não aparece `standby`/`lost` neste arquivo — pode ser artefato do recorte 2019-2022, não
-necessariamente ausência real desses status no período.)
+### Distribuição por ano × status (union dos 3 arquivos + banco)
 
-### Colunas (65) — nenhuma referência a anexo
+| Ano | won | todo | standby | cancelled | lost | Total |
+|---|---|---|---|---|---|---|
+| 2019 | 79 | 0 | 0 | 3.834 | 0 | 3.913 |
+| 2020 | 215 | 0 | 0 | 18.575 | 0 | 18.790 |
+| 2021 | 200 | 0 | 0 | 15.851 | 0 | 16.051 |
+| 2022 | 283 | 0 | 1 | 18.974 | 0 | 19.258 |
+| 2023 | 291 | 0 | 1 | 17.194 | 0 | 17.486 |
+| 2024 | 265 | 21 | 9 | 28.946 | 1 | 29.242 |
+| 2025 | 164 | 49 | 144 | 26.666 | 19 | 27.042 |
+| 2026 | 84 | 1.550 | 2.362 | 9.804 | 37 | 13.837 |
+| (sem ano, só banco) | — | — | — | — | — | 13 |
+
+Padrão esperado: `todo`/`standby` concentram quase todo o volume em 2024-2026 (pipeline ativo
+é por definição recente — um `todo` de 2020 já teria virado `won`/`cancelled` com o tempo).
+`won` é estável ano a ano (79-291), `cancelled` domina em todos os anos.
+
+### Colunas — nenhuma referência a anexo em nenhum dos 3 arquivos
 
 Lista completa: `Lead, ID, Nome Completo, Telefone, Renda Familiar, Minha Renda é, Entrada/
 FGTS, Email, CPF, url, Anuncio, Grupo de Anúncios, Campanha, Plataforma, Captador, Origem,
@@ -117,10 +162,11 @@ Created_from, Description`.
 **Nenhuma coluna de anexo, contagem de arquivo, ou nome de arquivo.** Confirma a D11
 diretamente no dado real, não só na documentação.
 
-**`Description` = os comentários.** 99,5% das linhas têm conteúdo (contra 29% no banco) —
-texto livre concatenado (respostas de formulário + notas manuais dos corretores), confirmado
-lendo amostras. É a evidência de que a caixa "incluir comentários" do export nativo estava
-marcada neste arquivo.
+**`Description` = os comentários.** Recontado sobre os 3 arquivos (145.619 linhas): **94,6%**
+têm conteúdo (contra 29% no banco, `lead_crm_import`) — texto livre concatenado (respostas de
+formulário + notas manuais dos corretores), confirmado lendo amostras. Levemente abaixo dos
+99,5% observados só no 1º arquivo (era o recorte com a marcação de "incluir comentários" mais
+consistente); ainda assim, uma cobertura muito maior que a do banco.
 
 ## 3. API v2 do noCRM — documentação oficial
 
@@ -159,8 +205,9 @@ leitura do que já temos localmente):
 1. **Painel do noCRM** — verificar visualmente uma amostra de leads (won/standby/todo) para
    ter uma noção qualitativa antes de comprometer o orçamento de API.
 2. **Amostra controlada via API** — chamar `GET /leads/{id}/attachments` para um lote
-   pequeno (ex.: os 799 leads `won` identificados na seção 5) consome no máximo ~800 das
-   2.000 requisições diárias, dá um número real sem comprometer o resto do orçamento do dia.
+   pequeno (ex.: os 1.581 leads `won` identificados na seção 6, número final pós-atualização
+   de 19/07) consome no máximo ~1.600 das 2.000 requisições diárias, dá um número real sem
+   comprometer o resto do orçamento do dia — cabe num único dia de orçamento.
    Não executado aqui — usa a credencial de produção (`NOCRM_API_KEY`) para uma finalidade
    nova, fora do escopo de "só leitura do que já existe localmente" desta investigação;
    fica como o primeiro passo prático de execução, não desta sessão.
@@ -189,38 +236,58 @@ Sem alternativa (seção 3). Desenho do job:
    (Docker volume nomeado, ver Fase 10 "Gestão do Lead") — associados ao `deal` local
    correspondente (criar o deal primeiro, se ainda não existir, a partir do export de leads).
 
-### Esforço estimado
+### Esforço estimado — ATUALIZADO 19/07/2026 com a base completa
 
-- **Leads + comentários (export nativo)**: baixo — 1-3 exports adicionais, formato já
-  conhecido, sem código novo além de um script de import (parser CSV → upsert em
-  `lead_crm_import` e/ou `deals`, reaproveitando o padrão de upsert que já existe pro sync).
-  Estimativa: poucos dias de trabalho.
-- **Anexos (API + n8n)**: depende do volume real (seção 4), mas com o recorte da seção 6
-  (~4.900 leads) e um chute conservador de 2-3 requisições por lead (1 lista + 1-2
-  downloads), fica em ~10.000-15.000 requisições — **5 a 8 dias corridos** de job rodando no
-  teto diário, sem contar o tempo de montar o workflow n8n em si (esse sim precisa de
-  estimativa própria, é a parte com código/configuração nova).
+- **Leads + comentários (export nativo)**: ✅ **concluído nesta etapa** — os 3 exports que
+  cobrem o período inteiro (2019-09 a 2026-07, sem buraco) já foram obtidos e validados (seção
+  2). Falta só o script de import (parser CSV → upsert em `lead_crm_import` e/ou `deals`,
+  reaproveitando o padrão de upsert que já existe pro sync) — poucos dias de trabalho, sem
+  dependência de orçamento de API.
+- **Anexos (API + n8n)**: com o corte real da seção 6 (**5.730 leads**, não mais a estimativa
+  de ~4.900) e o mesmo chute conservador de 2-3 requisições por lead (1 lista + 1-2 downloads),
+  fica em **~11.460-17.190 requisições** — **6 a 9 dias corridos** de job rodando no teto
+  diário de 2.000/dia, sem contar o tempo de montar o workflow n8n em si.
+- **Se o refinamento opcional for adotado** (promover `cancelled` dos últimos 12 meses para
+  "completo", ver seção 6) — o corte sobe para **26.526 leads**, ~53.000-80.000 requisições,
+  **27 a 40 dias corridos** de job. Decisão de fazer ou não fica com o Vagner; não é o corte
+  recomendado por padrão.
 
-## 6. Proposta de corte: quem ganha migração completa vs. histórico raso
+## 6. Proposta de corte: quem ganha migração completa vs. histórico raso — NÚMEROS FINAIS
 
-Baseado nos status já identificados (CSV + banco), a recomendação é migrar comentários +
-anexos completos só para quem tem valor operacional ou de compliance continuado; o resto
-(a imensa maioria, `cancelled` de 2019-2022) fica só com o registro raso que o export de
-leads+comentários já traz — não vale o orçamento de API neles.
+> **Atualizado 19/07/2026** com a base completa (145.632 leads, seção 2) — os números abaixo
+> são exatos (contagem real sobre os 3 exports + `lead_crm_import`), não mais estimativa. A
+> versão anterior (~4.900) foi calculada com só 6% dos dados disponíveis (o 1º export,
+> truncado em ago/2022) e subestimava o volume real.
 
-| Grupo | Critério | Volume estimado | Tratamento |
+Mesmo critério de antes, agora com cobertura total: migrar comentários + anexos completos só
+para quem tem valor operacional ou de compliance continuado (`won`, `todo`, `standby`); o
+resto (`cancelled`/`lost`, 96% da base) fica só com o registro raso que o export de
+leads+comentários já traz.
+
+| Grupo | Critério | Volume real (contagem completa) | Tratamento |
 |---|---|---|---|
-| **Completo** (comentários + anexos) | `won` (todos os anos — venda concluída, valor de compliance/histórico de documentos) | 663 (CSV, até ago/22) + 136 (banco, ~2026) = **~800** | Migração via API |
-| **Completo** | `todo` + `standby` (pipeline ainda ativo/pode reativar) | 1 (CSV) + 1.572 + 2.515 (banco) = **~4.090** | Migração via API |
-| **Raso** (só leads+comentários, sem API) | `cancelled`/`lost` — a imensa maioria (98,7% do CSV) | ~59.500+ (CSV truncado + estimativa do restante do período não coberto) | Só export nativo |
+| **Completo** (comentários + anexos) | `won` (todos os anos) | **1.581** | Migração via API |
+| **Completo** | `todo` + `standby` (pipeline ativo/pode reativar) | 1.631 + 2.518 = **4.149** | Migração via API |
+| **Raso** (só leads+comentários, sem API) | `cancelled` + `lost` | 139.845 + 57 = **139.902** | Só export nativo (já obtido) |
 
-**Total do corte "completo"**: ordem de **4.900 leads** — número muito mais tratável para o
-orçamento de 2.000 req/dia da API do que tentar migrar tudo.
+**Total do corte "completo": 5.730 leads** (contra a estimativa anterior de ~4.900 — a base
+real é ~17% maior, mas ainda numa ordem de grandeza tratável para o orçamento de 2.000
+req/dia da API, ver seção 5).
 
-Refinamento sugerido (não obrigatório): dentro de `cancelled`, considerar promover pra
-"completo" quem foi cancelado nos **últimos 12 meses** (chance real de reabordagem) — dado
-não quantificado aqui porque o CSV disponível não chega em 2025/2026; ajustar quando os
-exports que cobrem esse período existirem.
+### Refinamento (agora quantificado — antes era especulativo)
+
+A ideia registrada na versão anterior ("promover `cancelled` recente pra completo") agora tem
+número: dos 139.845 leads `cancelled`, **20.796 (14,9%) foram cancelados nos últimos 12 meses**
+(ago/2025-jul/2026). Se o Vagner decidir adotar esse refinamento:
+
+- Corte completo passaria de 5.730 para **26.526 leads** (+20.796).
+- Esforço de API sobe de ~6-9 dias corridos para **~27-40 dias corridos** (seção 5).
+
+**Recomendação**: não adotar o refinamento no corte inicial — a base de 5.730 já cobre 100%
+do pipeline vivo (`won`+`todo`+`standby`); o refinamento é sobre leads já mortos
+(`cancelled`) cuja "chance real de reabordagem" é uma hipótese de negócio, não um requisito
+técnico ou de compliance como o resto do corte. Reavaliar depois da migração base completa, se
+a equipe comercial pedir reabordagem de cancelados recentes especificamente.
 
 ## 7. Esboço do plano de adoção
 
