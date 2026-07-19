@@ -34,9 +34,9 @@ Sem testes hoje. Nada pode ser refatorado no escuro.
    container atual. Objetivo NÃO é testar "certo/errado" — é detectar
    mudança de comportamento.
    Local: `casagora-router/test/golden-master/` (`routes.mjs` + `run.mjs`
-   + `README.md` + `snapshots/baseline.json`), commitado na branch
-   `diagnostico` desse repo (commit `7ce37fb`, ainda não pushado para
-   origin). 45 rotas cobertas nos 4 grupos. Baseline gerado e validado
+   + `README.md` + `snapshots/baseline.json`), commitado e pushado na
+   branch `diagnostico` desse repo (commit `7ce37fb`). 45 rotas
+   cobertas nos 4 grupos. Baseline gerado e validado
    contra produção (`https://api.imovizapp.com`): rodou duas vezes,
    0 diffs na segunda. Rotas de mutação/envio real (whatsapp, webhooks)
    só testam o caminho de guarda (sem token/assinatura) por design —
