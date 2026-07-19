@@ -180,9 +180,9 @@ bloqueante, ver P4).
    orgânico no intervalo — período de baixo volume, não indica problema;
    `/health` respondeu 200 imediatamente após cada restart, nos dois
    deploys).
-9. **Login real**: pendente de confirmação manual do Vagner em
-   `https://app.imovizapp.com` (ver seção "Login real" no fim deste
-   histórico, preenchida quando a confirmação chegar).
+9. **Login real**: confirmado pelo Vagner em `https://app.imovizapp.com` —
+   testado em Firefox, Edge e Chrome, todos em modo anônimo. Login e
+   navegação funcionando normalmente nos três.
 
 **Lição registrada para o próximo deploy**: qualquer teste de comportamento
 por-IP (rate limit, allowlist, geo, auditoria) **precisa ser validado atrás
@@ -191,7 +191,9 @@ correto) não teria pego o gap do Traefik, porque a lógica de trust-proxy do
 Express estava certa; o problema estava um passo antes, no proxy que a
 alimenta.
 
-**Estado final**: produção em `0.9.324-fase1a-incrementos-1-2-trustproxy-20260719`.
-Bug crítico corrigido e validado. Gap residual (P4/P6) documentado, não
-bloqueante, sem prazo definido — decisão consciente de não bloquear o
-deploy de hoje por ele.
+**Estado final**: produção em `0.9.324-fase1a-incrementos-1-2-trustproxy-20260719`,
+**validação completa** (golden master, smoke test, comportamento por-IP atrás
+do proxy real, login real em 3 navegadores diferentes). Bug crítico corrigido
+e validado. Gap residual (P4/P6) documentado, não bloqueante, sem prazo
+definido — decisão consciente de não bloquear o deploy de hoje por ele.
+Deploy do dia encerrado com sucesso.
