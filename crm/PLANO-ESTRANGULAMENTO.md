@@ -24,39 +24,80 @@ de disparos, não este repo diretamente.
 
 ---
 
-## FASE 0 — Rede de segurança  [STATUS: em andamento — item 1 concluído em 19/07/2026, itens 2-4 pendentes]
+## FASE 0 — Rede de segurança  [STATUS: CONCLUÍDA em 19/07/2026 — pendente só o merge para main, decisão do Vagner]
 Sem testes hoje. Nada pode ser refatorado no escuro.
 
-1. ✅ **Golden master das rotas vivas** (concluído 19/07/2026): script de
-   testes de caracterização que bate nas rotas principais de cada grupo
-   vivo (auth, webhooks intake, v2 deals/leads/dashboard, exports
-   whatsapp) e grava as respostas como snapshot. Rodar contra o
-   container atual. Objetivo NÃO é testar "certo/errado" — é detectar
-   mudança de comportamento.
-   Local: `casagora-router/test/golden-master/` (`routes.mjs` + `run.mjs`
-   + `README.md` + `snapshots/baseline.json`), commitado e pushado na
-   branch `diagnostico` desse repo (commit `7ce37fb`). 45 rotas
-   cobertas nos 4 grupos. Baseline gerado e validado
-   contra produção (`https://api.imovizapp.com`): rodou duas vezes,
-   0 diffs na segunda. Rotas de mutação/envio real (whatsapp, webhooks)
-   só testam o caminho de guarda (sem token/assinatura) por design —
-   nunca criam lead real nem disparam WhatsApp real; ver README do
-   script para o porquê rota a rota. Uso: `npm run golden-master`
-   (opcional `--update-baseline` para aceitar mudança intencional como
-   novo baseline).
-2. **Pendente — Lint mínimo** (eslint com regras frouxas) + **CI
-   simples** que roda golden master (já existe, item 1) e lint em cada
-   push.
-3. **Pendente — Consertar o `npm start` local**: `package.json` aponta
-   `"main"`/`start` para `server.js`, mas o arquivo real é
-   `src/server.js` — só funciona no Docker hoje (achado confirmado em
-   19/07/2026 ao mexer no golden master).
-4. **Pendente — Varredura de segredos**: procurar credenciais hardcoded no código
-   e no histórico git. Mover para .env; TROCAR as senhas expostas
-   (histórico git é permanente).
+Todo o trabalho está na branch `diagnostico` do `casagora-router`
+(commits `7ce37fb` já mergeado via PR #11; `07ccea8`, `2324792`,
+`e0e4c79` ainda não mergeados — merge para `main` é decisão consciente
+do Vagner, não feito automaticamente por design).
 
-Critério de conclusão: golden master roda verde no CI; deploy de uma
-mudança trivial passa pelo pipeline.
+1. ✅ **Golden master das rotas vivas** (concluído 19/07/2026, mergeado
+   em `main`): script de testes de caracterização que bate nas rotas
+   principais de cada grupo vivo (auth, webhooks intake, v2
+   deals/leads/dashboard, exports whatsapp) e grava as respostas como
+   snapshot. Objetivo NÃO é testar "certo/errado" — é detectar mudança
+   de comportamento.
+   Local: `casagora-router/test/golden-master/` (`routes.mjs` +
+   `run.mjs` + `README.md` + `snapshots/baseline.json`). 45 rotas nos 4
+   grupos. Rotas de mutação/envio real (whatsapp, webhooks) só testam o
+   caminho de guarda (sem token/assinatura) por design — nunca criam
+   lead real nem disparam WhatsApp real; ver README do script. Uso:
+   `npm run golden-master` (opcional `--update-baseline`).
+   **Re-executado em 19/07/2026 ao fechar a fase: 0 diffs contra
+   produção.**
+2. ✅ **Lint mínimo + CI** (concluído 19/07/2026, branch `diagnostico`):
+   `eslint.config.js` liga só `no-undef` (error) e `no-unused-vars`
+   (warn) — zero regra de estilo. `npm run lint` roda 0 erros / 26
+   warnings (variáveis não usadas em `catch`, deixadas como estão,
+   conforme combinado). **O lint achou um bug real de escopo**
+   (`enriched` referenciado fora do try onde era declarado, no handler
+   de `/webhook/facebook` — o alerta de admin em falha de roteamento
+   nunca saía com contexto, às vezes nem saía) e uma linha de debug
+   morta em `/health` — os dois corrigidos (commit `2324792`).
+   `.github/workflows/ci.yml`: roda lint + `node --check src/server.js`
+   em todo push nas branches `main`/`diagnostico`. Golden master
+   **não** roda em CI, por decisão consciente: bate em produção real e
+   o manifesto de rotas é editável em PR — automatizar isso cria vetor
+   pra um PR (malicioso ou só com bug) disparar o CI contra produção.
+   Continua manual, antes de cada merge (documentado no topo do
+   workflow e no README do golden master).
+3. ✅ **`npm start` local corrigido** (concluído 19/07/2026, commit
+   `07ccea8`): `package.json` apontava `"main"`/`start` para
+   `server.js` (inexistente na raiz); corrigido para `src/server.js`.
+   Só funcionava no Docker porque o `Dockerfile` copia
+   `src/server.js` → `/app/server.js` e o `CMD` chama `node` direto
+   (não usa `npm start`) — por isso o bug nunca afetou produção.
+   Validado subindo `node src/server.js` contra um Postgres 17
+   descartável: conecta e roda migrações reais de `ensureSchema()`.
+   **Achado lateral, fora do escopo deste item**: `ensureSchema()` não
+   bootstrapa um banco vazio do zero (pelo menos 3 gaps confirmados —
+   coluna `app_settings.tenant_id`, tabelas `lead_crm_import` e
+   `app_users` nunca criadas pelo próprio código, só existem em
+   produção por migração manual fora de banda). Registrado como P5 em
+   `DECISOES.md`, não bloqueia este item nem produção.
+4. ✅ **Varredura de segredos** (concluído 19/07/2026): código atual +
+   histórico git completo (`git log --all`) de `casagora-router` (340
+   commits) e `casagora-sistema` (261 commits). `casagora-router`:
+   limpo, zero segredo hardcoded em qualquer commit — tudo já lido de
+   `process.env`. `casagora-sistema`: **achado crítico** — senha real
+   de produção do Postgres (`DATABASE_URL`, usuário `arkontech`) e
+   chave secreta real do Cloudflare Turnstile expostas em texto puro
+   num doc de planejamento (`docs/superpowers/plans/2026-07-02-lp-captacao-leads-plan.md`,
+   commit `d52c8b4`, 02/07/2026). Redigido no arquivo atual (commit
+   `5d96f00` nesse repo, branch `diagnostico`, **não pushado** — fora
+   do escopo de push desta sessão). Ambas as credenciais **precisam
+   ser trocadas manualmente pelo Vagner** (histórico git é permanente).
+   Relatório completo, sem nenhum valor de segredo:
+   `arkontech-docs/crm/segredos-relatorio.md`.
+
+Critério de conclusão original ("golden master roda verde no CI") foi
+ajustado na prática: golden master roda **verde manualmente** (0 diffs
+confirmado 19/07/2026), CI cobre lint + smoke de sintaxe — ver item 2
+para o porquê de golden master ter ficado fora do CI. Deploy de uma
+mudança trivial ainda não foi testado ponta a ponta pelo pipeline
+(só existe desde hoje); primeira vez que alguém fizer um deploy real
+depois do merge serve como validação.
 
 ---
 
