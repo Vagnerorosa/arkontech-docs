@@ -130,4 +130,68 @@ rodar golden master mais uma vez pra confirmar que voltou ao baseline
 
 ### 19/07/2026 — Fase 1A, Incrementos 1+2 (rate limiting + refresh/logout)
 
-*(preenchido ao final da execução desta sessão — ver abaixo)*
+**Resumo**: primeira execução real deste runbook. Achou e corrigiu um bug crítico
+(rate limiter global) e um gap residual de infra (Traefik não sanitiza
+`X-Forwarded-For`) no processo — ambos registrados em `DECISOES.md` (P4, P6).
+Deploy final bem-sucedido, com o gap residual aceito como follow-up (não
+bloqueante, ver P4).
+
+**Linha do tempo**:
+
+1. **Tag anotada antes**: `0.9.322-fix-nocrm-import-name-20260716` (git_sha
+   `fb6ef46` — de antes até do Fase 0/item 1, serviço não era atualizado desde
+   16/07).
+2. **Golden master ANTES**: 45 rotas existentes batendo com o baseline; as 2
+   rotas novas (`/refresh`, `/logout`) corretamente 404 (esperado, ainda não
+   deployadas). Watermarks de intake anotados (`lead_events` max_id 9984 @
+   10:19:01 UTC).
+3. **1ª tentativa de deploy** — `0.9.323-fase1a-incrementos-1-2-20260719`
+   (main com PRs #13+#14). Build e deploy ok, `/admin/version` e golden master
+   pós-deploy (47/47, 0 diffs) passaram. **Smoke test do rate limiter revelou
+   bug crítico**: sem `app.set('trust proxy', ...)`, `req.ip` atrás do Traefik
+   é sempre o IP interno da rede overlay — "10 tentativas/15min por IP" virava
+   "10 tentativas/15min pra produção inteira". Confirmado ao vivo: o próprio
+   smoke test consumiu 7 dos 10 slots do budget compartilhado.
+4. **Rollback imediato**: `docker service update --rollback` → confirmado de
+   volta em `0.9.322`/`fb6ef46`, golden master idêntico ao "antes", nenhum
+   lead perdido nos watermarks de intake.
+5. **Fix**: `app.set('trust proxy', ['loopback','uniquelocal'])` +
+   `clientIpForRateLimit()` (confia em `CF-Connecting-IP` só quando o IP
+   resolvido cai numa faixa de borda publicada da Cloudflare — os dois
+   domínios de produção têm hop count diferente, `routercasagora...` bate
+   direto no Traefik, `api.imovizapp.com` passa pela Cloudflare antes).
+   Branch `fase1a-fix-trust-proxy`, PR #15, validado com harness standalone
+   (6 cenários incluindo tentativas de spoofing) + golden master local
+   (47/47, 0 diffs) antes do merge.
+6. **2ª tentativa de deploy** — `0.9.324-fase1a-incrementos-1-2-trustproxy-20260719`.
+   Build, deploy, `/admin/version`/`/health` ok, golden master pós-deploy
+   47/47 0 diffs.
+7. **Validação de comportamento por-IP atrás do proxy real** (não só
+   localmente — lição desta execução, ver abaixo): tráfego real sem spoof
+   decrementou um único bucket de forma consistente (5→4), confirmando a
+   correção do bug crítico. Testes com `X-Forwarded-For` forjado (valores
+   diferentes a cada tentativa) sempre resetaram pra um bucket novo
+   (`remaining: 9`) — **achado um gap residual**: o Traefik está repassando
+   o `X-Forwarded-For` do cliente sem sanitizar, então um atacante
+   deliberado ainda contorna o limite variando esse header. Registrado como
+   P4 (infra, fora deste repo) e P6 (`superadmin-login` fica exposto
+   enquanto P4 não for corrigido) em `DECISOES.md`.
+8. **Watermarks de intake pós-deploy**: idênticos aos de antes (sem tráfego
+   orgânico no intervalo — período de baixo volume, não indica problema;
+   `/health` respondeu 200 imediatamente após cada restart, nos dois
+   deploys).
+9. **Login real**: pendente de confirmação manual do Vagner em
+   `https://app.imovizapp.com` (ver seção "Login real" no fim deste
+   histórico, preenchida quando a confirmação chegar).
+
+**Lição registrada para o próximo deploy**: qualquer teste de comportamento
+por-IP (rate limit, allowlist, geo, auditoria) **precisa ser validado atrás
+do proxy real em produção**, não só localmente — um harness local (mesmo
+correto) não teria pego o gap do Traefik, porque a lógica de trust-proxy do
+Express estava certa; o problema estava um passo antes, no proxy que a
+alimenta.
+
+**Estado final**: produção em `0.9.324-fase1a-incrementos-1-2-trustproxy-20260719`.
+Bug crítico corrigido e validado. Gap residual (P4/P6) documentado, não
+bloqueante, sem prazo definido — decisão consciente de não bloquear o
+deploy de hoje por ele.

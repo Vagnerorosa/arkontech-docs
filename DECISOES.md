@@ -22,6 +22,49 @@ da Fase 3 ou 4.
 Direção definida (disparos é produto horizontal; CRM é cliente dela
 — ver D3), mas o desenho fino da API entre eles será feito na Fase 5.
 
+### P4 — Traefik não sanitiza `X-Forwarded-For` (gap de infra, afeta toda a VPS)
+Achado no deploy de 19/07/2026 do rate limiter do `casagora-router`
+(Fase 1A, Incremento 1): `app.set('trust proxy', ...)` foi corrigido no
+código (PR #15), e resolve corretamente tráfego real — mas o Traefik
+(EasyPanel) está repassando o header `X-Forwarded-For` **como o cliente
+mandou**, sem sobrescrever/anexar o IP real de quem conectou. Confirmado
+ao vivo em produção: requisições com `X-Forwarded-For` forjado (valor
+diferente a cada tentativa) sempre ganham um bucket novo no rate
+limiter — um atacante deliberado contorna o limite de 10/15min só
+variando esse header. Não é um bug do `casagora-router` — qualquer
+serviço atrás deste Traefik que confie em `req.ip`/`X-Forwarded-For`
+para decisão de segurança (rate limit, allowlist por IP, log de
+auditoria) tem o mesmo problema.
+**Correção correta**: configurar `forwardedHeaders.trustedIPs` no
+Traefik (só aceitar/repassar `X-Forwarded-For` de dentro da rede
+overlay do Swarm + range da Cloudflare; para qualquer outra origem,
+descartar o header do cliente e usar o IP real da conexão). Fora do
+escopo de qualquer repositório de aplicação — é config do Traefik
+gerenciada pelo EasyPanel, `arkontech-docs/crm/reference/...` já registra
+que edição manual do config do Traefik já causou incidente antes
+(ver `reference_easypanel_novo_subdominio` nas memórias da sessão).
+**Merece sessão dedicada**, com checklist de validação por serviço
+(qualquer coisa atrás deste Traefik que dependa de IP de origem precisa
+ser testada de novo depois da mudança) — não decidido quando.
+
+### P5 (numeração pulada — já usada e resolvida, ver D9)
+
+### P6 — `superadmin-login` sem Turnstile, exposto ao mesmo contorno de rate limit (P4)
+Achado na mesma sessão de 19/07/2026. `POST /api/v2/auth/superadmin-login`
+nunca teve Turnstile (decisão original: "painel interno, não é
+público") — hoje sua única barreira de força bruta é o rate limiter
+compartilhado, que o P4 mostra ser contornável via
+`X-Forwarded-For` forjado. Enquanto o P4 não for corrigido, esta rota
+fica sem proteção efetiva contra tentativa de senha em massa.
+Hardening interino a avaliar (nenhum implementado ainda):
+- Adicionar Turnstile também no `superadmin-login` (muda o contrato da
+  rota — precisa de golden master atualizado e do frontend do painel
+  superadmin ajustado para enviar o token).
+- Allowlist de IP de origem pro painel superadmin (mais simples, mas
+  também depende de `req.ip` confiável — bloqueado pelo mesmo P4).
+- Resolver o P4 primeiro deixa as duas opções acima mais simples/seguras
+  de implementar depois.
+
 ## ✅ Tomadas
 
 ### D1 — Sistema de disparos nasce FORA do CRM (18/07/2026)
@@ -129,3 +172,18 @@ históricos + comentários + anexos) e um plano de adoção da equipe,
 webhook) ficam **bloqueados** até a base estar migrada e a equipe
 operando 100% pelo Imoviz — deixam de ser o próximo passo lógico.
 Estratégia de migração detalhada em `crm/fase1b-migracao-base.md`.
+
+### D12 — Corte final da migração de base noCRM: 5.730 leads,
+refinamento de cancelados recentes NÃO adotado por ora (19/07/2026).
+Contexto: com os 3 exports completos (145.619 leads, set/2019-jul/2026
+sem buraco, ver `crm/fase1b-migracao-base.md` seção 2), o corte "completo"
+(migração via API de comentários+anexos) ficou em **5.730 leads**
+(`won` 1.581 + `todo` 1.631 + `standby` 2.518) — os outros 139.902
+(`cancelled`+`lost`) ficam só com o registro raso do export nativo,
+já obtido. Refinamento cogitado (promover `cancelled` dos últimos 12
+meses pra completo, +20.796 leads, corte subiria pra 26.526) foi
+**quantificado mas não adotado**: a base de 5.730 já cobre 100% do
+pipeline vivo, e o refinamento é sobre leads já mortos cuja "chance de
+reabordagem" é hipótese de negócio, não requisito técnico/compliance.
+Reavaliar depois da migração base completa, se a equipe comercial pedir
+reabordagem de cancelados recentes especificamente.
