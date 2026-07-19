@@ -11,7 +11,7 @@ Detalhe em `crm/PLANO-ESTRANGULAMENTO.md`.
 | Fase | O quê | Semanas | Status |
 |------|-------|---------|--------|
 | F0 | Rede de segurança (golden master, lint, segredos) | s1–s2 | ✅ concluída e mergeada em main 19/07/2026 |
-| F1 | Terminar migrações: auth unificada + noCRM | s3–s6 | pendente |
+| F1 | Terminar migrações: auth unificada + noCRM | s3–s6 | levantamento concluído 19/07/2026, aguardando decisões |
 | F2 | Unificar relatórios (legado × v2) | s7–s9 | pendente |
 | F3 | Confirmar mortes, limpar anomalias, docs | s9–s10 | pendente |
 | F4 | Modularizar o server.js (15.800 linhas → módulos) | s11+ | pendente |

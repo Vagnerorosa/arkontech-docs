@@ -100,37 +100,54 @@ depois do merge serve como validação.
 
 ---
 
-## FASE 1 — Terminar as migrações paradas  [STATUS: pendente]
+## FASE 1 — Terminar as migrações paradas  [STATUS: levantamento concluído em 19/07/2026 — aguardando decisões do Vagner antes de codar, ver planos]
 Regra: terminar antes de começar coisa nova. São duas:
 
 ### 1A — Auth (a maior dívida)
-Hoje: sessões cookie legadas (/app, /admin) + JWT v2 sem refresh
-revogável + no frontend, JWT 30 dias em cookie não-httpOnly + login
-em duas etapas + regras duplicadas em middleware.ts e Sidebar.tsx.
+Levantamento completo + plano de execução em incrementos:
+**`crm/fase1-auth-plano.md`**. Resumo do que mudou em relação ao texto original abaixo:
 
-Passos:
-1. Backend: implementar refresh token revogável no v2 (tabela de
-   sessões no Postgres, rotação, logout real).
-2. Frontend: migrar para cookie httpOnly + fluxo único de login
-   (elimina as duas etapas). Unificar as regras de acesso em um só
-   lugar consumido por middleware e Sidebar.
-3. Migrar /admin e /app para o mesmo mecanismo (mantendo o escopo
-   "tenant Casagora only" do admin — é decisão consciente, preservar).
-4. Remover o código da auth legada quando nenhum caminho a usar.
+- O desenho-alvo **já está decidido**, não é mais um gap deste plano —
+  `/root/DIRETRIZES.md` §3 (11/07/2026, pós-incidente real) especifica access token 15min +
+  refresh token opaco revogável em `app_sessions`. Já existe até um plano de implementação
+  código a código pronto, nunca executado:
+  `casagora-sistema/docs/superpowers/plans/2026-07-11-jwt-session-revocation.md`.
+- **Correção**: "JWT 30 dias em cookie não-httpOnly" (texto original abaixo) está errado —
+  o cookie `imoviz_token` sempre foi `httpOnly: true` desde a fundação do frontend. O
+  problema real nunca foi esse; é a ausência de revogação (token de 30d não pode ser
+  invalidado antes de expirar).
+- **Passo 3 (migrar /admin e /app) contradiz `DIRETRIZES.md §14`**, que diz que o login
+  legado "é compatível, não precisa migrar". Não assumir nenhuma das duas leituras —
+  pergunta aberta pro Vagner no `fase1-auth-plano.md` (seção 5.1).
+- Hoje: sessões cookie legadas (/app, /admin, já revogáveis via `app_sessions`) + JWT v2
+  sem refresh revogável + login em duas etapas (login → troca de senha obrigatória reemite
+  token, não são duas chamadas ao mesmo endpoint) + regras duplicadas em middleware.ts e
+  Sidebar.tsx (confirmado: são duas estruturas de dados incompatíveis, não exagero).
 
-Critério: uma única geração de auth no código; login em um passo;
-token de sessão inacessível ao JavaScript; logout revoga de verdade.
+Critério (mantido): uma única geração de auth no código v2; login em um passo; token de
+sessão inacessível ao JavaScript (já é verdade hoje); logout revoga de verdade. Item "auth
+legada removida" fica condicionado à resposta da pergunta 5.1 acima.
 
-### 1B — noCRM (migração 10 do frontend)
-1. Levantar o que falta da migração (o .planning/phases/10-* documenta).
-2. Concluir, validar o desligamento com nocrm_create_enabled OFF e o
-   fluxo de leads 100% interno (commit 4ebaaf9 já removeu a dependência
-   de deal creation — confirmar o resto).
-3. Aposentar o sync/reconcile do noCRM (grupo 4) quando nada mais
-   depender — com cuidado: hoje é infra crítica (timer 15min).
+### 1B — noCRM
+Levantamento completo + plano de execução em incrementos: **`crm/fase1-nocrm-plano.md`**.
 
-Critério: sistema opera com noCRM desligado por 2 semanas sem
-incidente; jobs de sync removidos do systemd.
+**Correção importante**: "migração 10 do frontend" (texto original) **não existe** — a
+Fase 10 do `casagora-sistema` foi re-escopada em 05/06/2026 de "Migração noCRM" para
+"Gestão do Lead" (Kanban/tags/anexos/análise de crédito/proposta), sem relação com desligar
+o noCRM. `.planning/phases/10-*` não documenta essa migração. O trabalho real de
+desacoplar o noCRM aconteceu em commits pontuais no `casagora-router` (ex.: `4ebaaf9`), sem
+plano formal — o `fase1-nocrm-plano.md` reconstrói o estado a partir do código e do
+histórico git, não de um documento de planejamento pré-existente.
+
+Estado real (achado nesta sessão): `nocrm_create_enabled` continua **LIGADO** para a
+Casagora em produção — o desligamento ainda não começou, é a próxima ação concreta.
+Quatro mecanismos automáticos dependem do noCRM hoje (não só um timer de 15min): sync de
+agentes (~15min, systemd), sync de app_users (diário, systemd), sync de leads/deals
+(diário, in-process), worker de refresh via webhook (5min, in-process) — detalhe completo
+e plano de desligamento incremento a incremento no documento.
+
+Critério (mantido): sistema opera com noCRM desligado por 2 semanas sem incidente; jobs de
+sync removidos do systemd.
 
 ---
 
