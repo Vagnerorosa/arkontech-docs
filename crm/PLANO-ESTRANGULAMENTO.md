@@ -24,28 +24,34 @@ de disparos, não este repo diretamente.
 
 ---
 
-## FASE 0 — Rede de segurança  [STATUS: em andamento — item 1 concluído em 19/07/2026]
+## FASE 0 — Rede de segurança  [STATUS: em andamento — item 1 concluído em 19/07/2026, itens 2-4 pendentes]
 Sem testes hoje. Nada pode ser refatorado no escuro.
 
-1. ✅ **Golden master das rotas vivas** (19/07/2026): script de testes de
-   caracterização que bate nas rotas principais de cada grupo vivo
-   (auth, webhooks intake, v2 deals/leads/dashboard, exports whatsapp)
-   e grava as respostas como snapshot. Rodar contra o container atual.
-   Objetivo NÃO é testar "certo/errado" — é detectar mudança de
-   comportamento.
-   Em `casagora-router/test/golden-master/` (`routes.mjs` + `run.mjs` +
-   `README.md`), 45 rotas cobertas, baseline gerado e validado contra
-   produção (`https://api.imovizapp.com`, 0 diffs numa segunda rodada).
-   Rotas de mutação/envio real (whatsapp, webhooks) só testam o caminho
-   de guarda (sem token/assinatura) por design — ver README do script
-   para o porquê. `npm run golden-master` (opcional
-   `--update-baseline`). Ainda não commitado no repo `casagora-router`
-   nem plugado em CI — próxima sessão decide.
-2. **Lint mínimo** (eslint com regras frouxas) + CI simples que roda
-   golden master e lint em cada push.
-3. **Consertar o `npm start` local** (aponta para caminho errado do
-   server.js — só funciona no Docker).
-4. **Varredura de segredos**: procurar credenciais hardcoded no código
+1. ✅ **Golden master das rotas vivas** (concluído 19/07/2026): script de
+   testes de caracterização que bate nas rotas principais de cada grupo
+   vivo (auth, webhooks intake, v2 deals/leads/dashboard, exports
+   whatsapp) e grava as respostas como snapshot. Rodar contra o
+   container atual. Objetivo NÃO é testar "certo/errado" — é detectar
+   mudança de comportamento.
+   Local: `casagora-router/test/golden-master/` (`routes.mjs` + `run.mjs`
+   + `README.md` + `snapshots/baseline.json`), commitado na branch
+   `diagnostico` desse repo (commit `7ce37fb`, ainda não pushado para
+   origin). 45 rotas cobertas nos 4 grupos. Baseline gerado e validado
+   contra produção (`https://api.imovizapp.com`): rodou duas vezes,
+   0 diffs na segunda. Rotas de mutação/envio real (whatsapp, webhooks)
+   só testam o caminho de guarda (sem token/assinatura) por design —
+   nunca criam lead real nem disparam WhatsApp real; ver README do
+   script para o porquê rota a rota. Uso: `npm run golden-master`
+   (opcional `--update-baseline` para aceitar mudança intencional como
+   novo baseline).
+2. **Pendente — Lint mínimo** (eslint com regras frouxas) + **CI
+   simples** que roda golden master (já existe, item 1) e lint em cada
+   push.
+3. **Pendente — Consertar o `npm start` local**: `package.json` aponta
+   `"main"`/`start` para `server.js`, mas o arquivo real é
+   `src/server.js` — só funciona no Docker hoje (achado confirmado em
+   19/07/2026 ao mexer no golden master).
+4. **Pendente — Varredura de segredos**: procurar credenciais hardcoded no código
    e no histórico git. Mover para .env; TROCAR as senhas expostas
    (histórico git é permanente).
 
