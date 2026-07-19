@@ -167,15 +167,28 @@ scripts diretamente invocados por eles.
 
 ## Pendências para o Vagner (ação manual, fora do escopo desta sessão)
 
-1. Trocar a senha do usuário `arkontech` no Postgres de produção
-   (`arkontech_postgres` / banco `casagora_router`) e atualizar
-   `DATABASE_URL` na env do serviço `casagora_router_api`.
-2. Gerar novo par de chaves Cloudflare Turnstile (site key + secret key) e
-   atualizar `TURNSTILE_SECRET` (backend) e `NEXT_PUBLIC_TURNSTILE_SITE_KEY`
-   (build-arg do frontend, ver `casagora-sistema/CLAUDE.md`) juntos — são
-   gerados como par, trocar um sem o outro quebra a validação.
-3. Depois de trocar: confirmar login (usa Turnstile) e captação de leads via
-   LP (usa Turnstile + `DATABASE_URL`) continuam funcionando em produção.
-4. (Opcional, higiene) Mover o Bearer token do carhauler do crontab do
-   root para um script + `EnvironmentFile` (`600`), mesmo padrão dos
-   backups — não é urgente, mas destoa do resto da VPS.
+> **Status em 19/07/2026 (execução da rotação):** ver
+> `rotacao-credenciais.md` para o passo a passo e o histórico completo de
+> execução.
+
+1. ✅ **ROTACIONADO em 19/07/2026.** Senha do usuário `arkontech` no
+   Postgres de produção trocada (`ALTER USER`) e os 4 consumidores
+   (`casagora_router_api`, `arkontech_api`, `carhauler_app`,
+   `carhauler_app_canary`) + `/etc/casagora-db-backup.env` atualizados com
+   a senha nova. Validado: os 4 serviços de pé, golden master 0 diffs,
+   backup manual bem-sucedido, login real ok, carhauler respondendo.
+2. ✅ **ROTACIONADO em 19/07/2026** (secret key apenas — Cenário A do
+   runbook). Nova secret key gerada no dashboard Cloudflare Turnstile e
+   `TURNSTILE_SECRET` atualizado no `casagora_router_api`. A site key
+   pública (`NEXT_PUBLIC_TURNSTILE_SITE_KEY`) **não foi trocada** — a
+   documentação oficial do Cloudflare confirma que rotacionar só a
+   secret é suportado e suficiente para este achado (a site key não é
+   segredo); nenhum rebuild do frontend foi necessário.
+3. ✅ Confirmado em produção: login (`app.imovizapp.com`, usa Turnstile)
+   e captação de leads via LP continuam funcionando; validado em 3
+   navegadores anônimos diferentes.
+4. ⏸️ **Adiado** (decisão do Vagner, 19/07/2026): mover o Bearer token do
+   carhauler do crontab do root para `EnvironmentFile` — junto com a
+   rotação do próprio valor do token, adiado porque o Carhauler vai
+   passar por reformulação completa em breve (retrabalho fazer agora).
+   Ver nota em `rotacao-credenciais.md` seção 3.

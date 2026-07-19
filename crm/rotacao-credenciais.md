@@ -1,10 +1,14 @@
 # Runbook — Rotação de credenciais
 
 > Escrito em 19/07/2026, a partir dos achados de `crm/segredos-relatorio.md`
-> (Fase 0, item 4). **Nenhum passo deste runbook foi executado nesta
-> sessão** — é procedimento frio, revisável, para o Vagner rodar quando
-> decidir. Cada seção é independente e pode ser executada separadamente,
-> em ordem qualquer.
+> (Fase 0, item 4). **Seções 1 (Postgres) e 2 (Turnstile) foram
+> executadas em produção em 19/07/2026** — ver `## Histórico de
+> execução` no fim deste arquivo para o relato completo, achados e
+> correções feitas durante a execução. A Seção 3 (token do Carhauler)
+> foi adiada, não executada — ver nota na própria seção. Procedimento
+> revisado e corrigido com base na execução real; reaplicar as seções
+> 1/2 no futuro (nova rotação) deve seguir a versão corrigida do texto
+> abaixo, não a suposição original.
 >
 > **Regra geral: nenhum valor de segredo (senha, chave, token) é
 > reproduzido neste arquivo**, nem o antigo nem o novo — mesma disciplina
@@ -49,9 +53,7 @@ for svc in $(docker service ls --format '{{.Name}}'); do
 done
 ```
 
-Em 19/07/2026 retornou 4 serviços Swarm (todos gerenciados pelo
-**EasyPanel**, `http://31.97.168.24:3000` — não editar `docker service
-update --env-add` como método principal, ver nota abaixo):
+Em 19/07/2026 retornou 4 serviços Swarm:
 
 1. **`casagora_router_api`** — env `DATABASE_URL` (aponta pro banco
    `casagora_router`).
@@ -77,17 +79,34 @@ Mais dois consumidores fora do Swarm:
 Confirmar que nenhum novo serviço apareceu desde 19/07 antes de seguir
 (rerrodar o loop acima).
 
-### Como os serviços Swarm recebem `DATABASE_URL` na prática
+### Como os serviços Swarm recebem `DATABASE_URL` na prática — CORRIGIDO em 19/07/2026 (execução)
 
-`docker service inspect` mostra o env já "assado" na spec do serviço —
-**não é lido de um `.env` no host** (os arquivos `/etc/casagora-router*.env`
-neste servidor só existem pra rodar um container de teste local, como o
-usado pra validar golden master; não são a fonte de verdade do serviço em
-produção). O EasyPanel grava e gerencia essa env diretamente. **Editar via
-`docker service update --env-add` funciona no ato, mas o EasyPanel pode
-reverter no próximo deploy/reconciliação disparado pela UI** — sempre
-espelhar a mudança na aba de variáveis de ambiente do serviço, no painel
-do EasyPanel, mesmo que o CLI tenha sido usado como atalho emergencial.
+> **A suposição original deste runbook estava errada.** Escrito antes de
+> verificar: presumia que os 4 serviços (`casagora_router_api`,
+> `arkontech_api`, `carhauler_app`, `carhauler_app_canary`) eram
+> projetos EasyPanel e que a edição devia ser feita pela UI
+> (`http://31.97.168.24:3000`). Na execução da Seção 2 (Turnstile),
+> conferido diretamente no host que isso não é o caso:
+> - `docker service inspect <serviço> --format '{{json .Spec.Labels}}'`
+>   retorna `{}` para os 4 — nenhum label do EasyPanel.
+> - `/etc/easypanel/projects/` no disco só contém `agenciadeia` e
+>   `eufernandasimoes` — `casagora`, `carhauler` e `arkontech` não
+>   existem como projetos EasyPanel, nem aparecem na busca da UI.
+>
+> Ou seja: são serviços Swarm puros, criados/atualizados diretamente via
+> `docker service create`/`update`, sem registro no EasyPanel — mesmo
+> com o Traefik (que É gerenciado pelo EasyPanel) roteando pra eles.
+> **`docker service update --env-add` é o mecanismo real e único** para
+> os 4, não um atalho emergencial — não há painel EasyPanel que possa
+> reverter a mudança, porque o EasyPanel não sabe que esses serviços
+> existem. O comando já dispara o rolling restart sozinho (Swarm
+> reinicia a task quando a spec muda).
+>
+> `docker service inspect` mostra o env já "assado" na spec do serviço —
+> **não é lido de um `.env` no host** (os arquivos
+> `/etc/casagora-router*.env` neste servidor só existem pra rodar um
+> container de teste local, como o usado pra validar golden master; não
+> são a fonte de verdade do serviço em produção).
 
 ### Passos
 
@@ -114,13 +133,14 @@ do EasyPanel, mesmo que o CLI tenha sido usado como atalho emergencial.
 
 4. **Atualizar os 4 serviços Swarm, em sequência rápida** (minimizar a
    janela em que alguns consumidores têm a senha nova e outros ainda não
-   foram reiniciados com ela):
-   - No EasyPanel, para cada um de `casagora_router_api`, `arkontech_api`,
-     `carhauler_app`, `carhauler_app_canary`: abrir o serviço → aba de
-     variáveis de ambiente → atualizar `DATABASE_URL` (ou
-     `POSTGRES_PASSWORD` no caso do `arkontech_api`) com a nova senha →
-     salvar (isso já dispara redeploy/restart do serviço pelo próprio
-     EasyPanel).
+   foram reiniciados com ela) — via CLI, mecanismo real (ver correção
+   acima, não é EasyPanel):
+   ```bash
+   docker service update --env-add "DATABASE_URL=<nova_connection_string>" casagora_router_api
+   docker service update --env-add "DATABASE_URL=<nova_connection_string>" carhauler_app
+   docker service update --env-add "DATABASE_URL=<nova_connection_string>" carhauler_app_canary
+   docker service update --env-add "POSTGRES_PASSWORD=<NOVA_SENHA>" arkontech_api
+   ```
    - Confirmar cada serviço voltou saudável antes de passar pro próximo:
      ```bash
      docker service ps <nome_do_serviço> --no-trunc | head -5
@@ -247,6 +267,21 @@ segredo, mas documentar para completude):
 
 ## 3. Bearer token do Carhauler (crontab do `root`)
 
+### Status — adiado (decisão de 19/07/2026)
+
+> **Não executar por ora.** Decisão do Vagner na sessão de execução
+> (19/07/2026): o Carhauler vai passar por uma reformulação completa em
+> breve — rotacionar este token agora seria retrabalho, já que a
+> reformulação provavelmente muda onde/como o token é armazenado. Fica
+> como está (token atual continua válido) até a reformulação acontecer.
+> Reavaliar este item quando a reformulação for planejada.
+>
+> **Não afeta a Seção 1 deste runbook (Postgres)**: `carhauler_app` e
+> `carhauler_app_canary` continuam na lista de consumidores da senha do
+> Postgres e recebem a senha nova normalmente — é um segredo diferente
+> (`IMPORT_EMAIL_CRON_TOKEN` vs. a senha do role `arkontech`), este
+> adiamento é só do Bearer token do crontab.
+
 ### Onde o token é gerado/validado
 
 O token não vem de um provedor externo — é um valor estático que o
@@ -276,8 +311,12 @@ permissão `600`, não valor direto no crontab).
    ```bash
    openssl rand -hex 32
    ```
-2. **Atualizar no `carhauler_app`** (EasyPanel → serviço `carhauler_app`
-   → variáveis de ambiente → `IMPORT_EMAIL_CRON_TOKEN` → salvar).
+2. **Atualizar no `carhauler_app`** — **correção pós-execução (19/07/2026):
+   não é EasyPanel**, mesmo achado da Seção 1 (Postgres) — `carhauler_app`
+   também é serviço Swarm puro, sem label EasyPanel. Usar:
+   ```bash
+   docker service update --env-add "IMPORT_EMAIL_CRON_TOKEN=<NOVO_TOKEN>" carhauler_app
+   ```
    Confirmar se `carhauler_app_canary` também precisa do mesmo valor —
    só se algum job/teste chamar a URL do canary com esse token; o
    crontab atual do `root` só chama o domínio de produção
@@ -303,6 +342,85 @@ permissão `600`, não valor direto no crontab).
    ```
    Esperado: sem erro `401`/`unauthorized`, log de execução normal do
    import de e-mail.
-5. **Rollback**: reverter `IMPORT_EMAIL_CRON_TOKEN` no EasyPanel para o
-   valor antigo E o crontab para o header antigo, juntos (os dois lados
-   precisam bater, não é um par com grace period como o Turnstile).
+5. **Rollback**: reverter `IMPORT_EMAIL_CRON_TOKEN` via
+   `docker service update --env-add` (não EasyPanel, ver correção acima)
+   para o valor antigo E o crontab para o header antigo, juntos (os dois
+   lados precisam bater, não é um par com grace period como o Turnstile).
+
+---
+
+## Histórico de execução
+
+### 19/07/2026 — janela de domingo, baixo uso
+
+Execução seção por seção, com validação e checkpoint do Vagner antes de
+cada restart/mudança visível. Nenhum valor de segredo foi escrito neste
+arquivo, no chat, ou em qualquer lugar do `arkontech-docs` durante a
+execução — os valores novos ficaram só em
+`/root/secrets/rotation-20260719/` (permissão `700`/`600`), apagados com
+`shred -u -z` ao final, depois que o Vagner confirmou ter salvo a senha
+do Postgres e a secret do Turnstile no gerenciador de credenciais dele.
+
+**Decisão antes de começar**: rotação do Bearer token do Carhauler
+(Seção 3) **adiada** — o Carhauler vai passar por reformulação completa
+em breve, rotacionar agora seria retrabalho. Token atual continua válido.
+Ver nota na própria Seção 3.
+
+**Seção 2 (Turnstile) — executada primeiro, por ser menor risco:**
+- Achado durante a execução: o runbook presumia que `casagora_router_api`
+  (e os outros 3 consumidores do Postgres) eram projetos EasyPanel,
+  editáveis pela UI. Verificação direta no host (`docker service inspect
+  --format '{{json .Spec.Labels}}'` retornando `{}`, e
+  `/etc/easypanel/projects/` no disco só com `agenciadeia` e
+  `eufernandasimoes`) mostrou que isso está errado: são serviços Swarm
+  puros, sem registro no EasyPanel. `docker service update --env-add` é
+  o mecanismo real, não um atalho — corrigido nas Seções 1 e 3 deste
+  arquivo.
+- `TURNSTILE_SECRET` atualizado via `docker service update --env-add` em
+  `casagora_router_api`. Rolling update convergiu (task nova de pé em
+  ~10s). `TURNSTILE_SECRET_WEBCHAT` confirmado intocado.
+- Validação: login real em `app.imovizapp.com` e envio de teste na LP —
+  ok. Revalidado depois, junto com a Seção 1 (Postgres): login testado em
+  3 navegadores anônimos diferentes, ok.
+
+**Seção 1 (Postgres) — executada em seguida:**
+- Pré-checagem: descoberta de consumidores rerrodada, mesmos 4 serviços
+  de 19/07 (nenhum novo). Roles/bancos conferidos batendo com o runbook.
+  Backup da senha antiga (4 arquivos, um por serviço) e da senha nova
+  salvos em arquivos `600` antes de qualquer mudança, para rollback
+  imediato se necessário.
+- `ALTER USER arkontech WITH PASSWORD ...` executado às 17:17 UTC.
+- Os 4 serviços (`casagora_router_api`, `carhauler_app`,
+  `carhauler_app_canary`, `arkontech_api`) atualizados em sequência
+  rápida via `docker service update --env-add`, cada um confirmado
+  saudável antes do próximo. Todos convergiram sem erro.
+- **Incidente durante a validação**: ao atualizar
+  `/etc/casagora-db-backup.env`, o arquivo foi sobrescrito só com a
+  `DATABASE_URL` nova, perdendo a variável `R2_BUCKET` que também morava
+  nesse arquivo (não capturada na checagem inicial de variáveis por um
+  regex que não bateu com o formato real do arquivo). O backup manual
+  falhou na 1ª tentativa com `R2_BUCKET: unbound variable` — não
+  relacionado à senha nova (o dump do Postgres com a senha nova já tinha
+  funcionado, 83M, antes do erro do R2). Corrigido reconstruindo o
+  arquivo a partir do backup salvo antes da edição, preservando
+  `R2_BUCKET` e os comentários, trocando só a `DATABASE_URL`. Backup
+  reexecutado com sucesso (dump local, upload diário, cópia semanal, tudo
+  ok). **Lição para próximas edições de arquivos de env fora do Swarm**:
+  sempre diffar contra o backup antes de considerar a checagem de
+  variáveis completa, não confiar em um único padrão de regex.
+- Validação, na ordem pedida pelo Vagner:
+  1. ✅ 4 serviços de pé, sem tasks falhando (só falhas históricas de 12
+     dias atrás, não relacionadas).
+  2. ✅ Golden master: 47 snapshots comparados, 0 mudaram.
+  3. ✅ Backup manual (após correção do incidente acima).
+  4. ✅ Login real confirmado pelo Vagner em 3 navegadores anônimos.
+  5. ✅ Carhauler respondendo (`carhauler.arkontech.com.br` → 200, sem
+     erro de auth/DB nos logs recentes de `carhauler_app` e
+     `carhauler_app_canary`).
+- Sem rollback necessário em nenhum passo.
+
+**Resultado final**: Turnstile (secret, Cenário A) e Postgres (senha do
+role `arkontech`, 4 consumidores) rotacionados e validados em produção.
+Token do Carhauler (crontab) permanece o mesmo, adiado por decisão
+consciente. `segredos-relatorio.md` atualizado para refletir o novo
+status.
