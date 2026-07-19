@@ -24,15 +24,23 @@ de disparos, não este repo diretamente.
 
 ---
 
-## FASE 0 — Rede de segurança  [STATUS: pendente]
+## FASE 0 — Rede de segurança  [STATUS: em andamento — item 1 concluído em 19/07/2026]
 Sem testes hoje. Nada pode ser refatorado no escuro.
 
-1. **Golden master das rotas vivas**: script de testes de
+1. ✅ **Golden master das rotas vivas** (19/07/2026): script de testes de
    caracterização que bate nas rotas principais de cada grupo vivo
    (auth, webhooks intake, v2 deals/leads/dashboard, exports whatsapp)
    e grava as respostas como snapshot. Rodar contra o container atual.
    Objetivo NÃO é testar "certo/errado" — é detectar mudança de
    comportamento.
+   Em `casagora-router/test/golden-master/` (`routes.mjs` + `run.mjs` +
+   `README.md`), 45 rotas cobertas, baseline gerado e validado contra
+   produção (`https://api.imovizapp.com`, 0 diffs numa segunda rodada).
+   Rotas de mutação/envio real (whatsapp, webhooks) só testam o caminho
+   de guarda (sem token/assinatura) por design — ver README do script
+   para o porquê. `npm run golden-master` (opcional
+   `--update-baseline`). Ainda não commitado no repo `casagora-router`
+   nem plugado em CI — próxima sessão decide.
 2. **Lint mínimo** (eslint com regras frouxas) + CI simples que roda
    golden master e lint em cada push.
 3. **Consertar o `npm start` local** (aponta para caminho errado do

@@ -22,6 +22,17 @@ da Fase 3 ou 4.
 Direção definida (disparos é produto horizontal; CRM é cliente dela
 — ver D3), mas o desenho fino da API entre eles será feito na Fase 5.
 
+### P4 — DIAGNOSTICO.md e censo de rotas nunca foram persistidos (19/07/2026)
+O censo de 203 rotas citado no cabeçalho do `PLANO-ESTRANGULAMENTO.md` foi
+produzido em sessão anterior, mas nunca virou arquivo — busca completa no
+filesystem e no histórico git (todas as branches, stashes) de
+`casagora-sistema` e `casagora-router` não encontrou `DIAGNOSTICO.md` nem
+nenhum arquivo de censo. Só sobrou o resumo condensado já embutido no plano.
+O número de rotas (203) foi reconferido em 19/07/2026 contando
+`app.<method>(` em `casagora-router/src/server.js` — bate exatamente.
+DECIDIR: regerar o censo detalhado (por grupo/rota) como arquivo em
+`crm/` ou aceitar o resumo do plano como suficiente e seguir sem ele.
+
 ## ✅ Tomadas
 
 ### D1 — Sistema de disparos nasce FORA do CRM (18/07/2026)
