@@ -1,8 +1,10 @@
-# Relatório de varredura de segredos — 19/07/2026
+# Relatório de varredura de segredos — 19/07/2026 (atualizado 19/07/2026, 2ª passada)
 
-Fase 0, item 4 do `PLANO-ESTRANGULAMENTO.md`. Escopo: código atual (working
-tree do HEAD de `main`) **e** histórico git completo (`git log --all`, todas
-as branches/tags) de `casagora-router` e `casagora-sistema`.
+Fase 0, item 4 do `PLANO-ESTRANGULAMENTO.md`. Escopo original: código atual
+(working tree do HEAD de `main`) **e** histórico git completo (`git log
+--all`, todas as branches/tags) de `casagora-router` e `casagora-sistema`.
+2ª passada (tarefa de backups/R2, mesma data): crontabs e `/etc/cron.d` da
+VPS.
 
 **Regra deste relatório: nenhum valor de segredo é reproduzido aqui, nem
 parcial.** Onde um segredo foi encontrado, o valor foi redigido no arquivo de
@@ -104,6 +106,52 @@ Três outros commits (`27354d3`, `54f6a00`, `62976b7`) têm linhas como
 claramente placeholders/valores de desenvolvimento, não credenciais reais.
 Nenhuma ação necessária.
 
+## Achados — crontabs / `/etc/cron.d` da VPS (2ª passada, 19/07/2026)
+
+Escopo: `crontab -l` de todos os usuários do sistema (`/etc/passwd`),
+`/var/spool/cron/crontabs/*`, todos os arquivos de `/etc/cron.d/`, e os
+scripts diretamente invocados por eles.
+
+### 🟡 MÉDIO — Bearer token do carhauler em texto puro no crontab do root
+
+- **Local**: crontab do usuário `root` (`/var/spool/cron/crontabs/root`),
+  job `carhauler-email-import` (roda a cada 10 min), no cabeçalho
+  `Authorization: Bearer <token>` de um `curl` para
+  `carhauler.arkontech.com.br/api/import/superdispatch/pull-email`.
+- **Tipo**: token de API estático (não é senha de banco nem chave de
+  provedor externo — é um token da própria API do Carhauler).
+- **Desde quando**: arquivo com esse conteúdo desde 19/02/2026 (`mtime` do
+  spool file).
+- **Severidade**: média, não crítica — diferente dos achados acima, este
+  **não está em nenhum histórico git** (crontab não é repositório) e o
+  arquivo já tem permissão `600`/dono `root` (não é legível por outros
+  usuários do sistema). O risco real é: qualquer coisa que rode como root
+  nesta VPS, ou um backup/snapshot do sistema de arquivos que inclua
+  `/var/spool/cron/`, expõe o valor. Comparável ao padrão que
+  `DIRETRIZES.md §2` já pede pra evitar (segredo fora de um cofre/env
+  gerenciado), mas sem o agravante de exposição permanente via git.
+- **TROCAR**: a critério do Vagner — não é urgente como os achados acima,
+  mas está fora do padrão do resto da VPS (os outros jobs/timers que
+  precisam de credencial usam `EnvironmentFile` com permissão `600`, não
+  crontab direto — ver `casagora-db-backup.service` em
+  `arkontech-docs/crm/backups.md`). Sugestão de higiene, não bloqueante:
+  mover para um script + `EnvironmentFile` seguindo o mesmo padrão.
+
+### Resto do escopo: limpo
+
+- Nenhum outro usuário do sistema tem crontab com conteúdo.
+- `/etc/cron.d/*` (`casagora-router-refresh-dev-db`, `docker-image-prune`,
+  `e2scrub_all`, `sysstat`) — nenhum segredo; o único job de aplicação
+  (`casagora-router-refresh-dev-db.sh`) autentica no Postgres via usuário
+  local dentro do container (`psql -U arkontech` via `docker exec`,
+  trust auth do socket unix), sem senha/connection string armazenada em
+  lugar nenhum.
+- `casagora-db-backup.service`/`.timer` e `agenciadeia-db-backup.service`/
+  `.timer` (novo, ver `backups.md`): credenciais via `EnvironmentFile`
+  (`/etc/casagora-db-backup.env`, permissão `600`) ou nenhuma credencial
+  armazenada (o novo backup do Evolution usa `pg_dump` local dentro do
+  container, mesmo padrão trust-auth do refresh-dev-db).
+
 ## Remediação já aplicada (código atual)
 
 - `docs/superpowers/plans/2026-07-02-lp-captacao-leads-plan.md`: os 2 blocos
@@ -128,3 +176,6 @@ Nenhuma ação necessária.
    gerados como par, trocar um sem o outro quebra a validação.
 3. Depois de trocar: confirmar login (usa Turnstile) e captação de leads via
    LP (usa Turnstile + `DATABASE_URL`) continuam funcionando em produção.
+4. (Opcional, higiene) Mover o Bearer token do carhauler do crontab do
+   root para um script + `EnvironmentFile` (`600`), mesmo padrão dos
+   backups — não é urgente, mas destoa do resto da VPS.
