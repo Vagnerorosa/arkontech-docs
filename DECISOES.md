@@ -22,48 +22,24 @@ da Fase 3 ou 4.
 Direção definida (disparos é produto horizontal; CRM é cliente dela
 — ver D3), mas o desenho fino da API entre eles será feito na Fase 5.
 
-### P4 — Traefik não sanitiza `X-Forwarded-For` (gap de infra, afeta toda a VPS)
-Achado no deploy de 19/07/2026 do rate limiter do `casagora-router`
-(Fase 1A, Incremento 1): `app.set('trust proxy', ...)` foi corrigido no
-código (PR #15), e resolve corretamente tráfego real — mas o Traefik
-(EasyPanel) está repassando o header `X-Forwarded-For` **como o cliente
-mandou**, sem sobrescrever/anexar o IP real de quem conectou. Confirmado
-ao vivo em produção: requisições com `X-Forwarded-For` forjado (valor
-diferente a cada tentativa) sempre ganham um bucket novo no rate
-limiter — um atacante deliberado contorna o limite de 10/15min só
-variando esse header. Não é um bug do `casagora-router` — qualquer
-serviço atrás deste Traefik que confie em `req.ip`/`X-Forwarded-For`
-para decisão de segurança (rate limit, allowlist por IP, log de
-auditoria) tem o mesmo problema.
-**Correção correta**: configurar `forwardedHeaders.trustedIPs` no
-Traefik (só aceitar/repassar `X-Forwarded-For` de dentro da rede
-overlay do Swarm + range da Cloudflare; para qualquer outra origem,
-descartar o header do cliente e usar o IP real da conexão). Fora do
-escopo de qualquer repositório de aplicação — é config do Traefik
-gerenciada pelo EasyPanel, `arkontech-docs/crm/reference/...` já registra
-que edição manual do config do Traefik já causou incidente antes
-(ver `reference_easypanel_novo_subdominio` nas memórias da sessão).
-**Merece sessão dedicada**, com checklist de validação por serviço
-(qualquer coisa atrás deste Traefik que dependa de IP de origem precisa
-ser testada de novo depois da mudança) — não decidido quando.
-
 ### P5 (numeração pulada — já usada e resolvida, ver D9)
 
-### P6 — `superadmin-login` sem Turnstile, exposto ao mesmo contorno de rate limit (P4)
-Achado na mesma sessão de 19/07/2026. `POST /api/v2/auth/superadmin-login`
-nunca teve Turnstile (decisão original: "painel interno, não é
-público") — hoje sua única barreira de força bruta é o rate limiter
-compartilhado, que o P4 mostra ser contornável via
-`X-Forwarded-For` forjado. Enquanto o P4 não for corrigido, esta rota
-fica sem proteção efetiva contra tentativa de senha em massa.
-Hardening interino a avaliar (nenhum implementado ainda):
+### P6 — `superadmin-login` sem segunda camada de defesa além do rate limit
+Achado em 19/07/2026, junto com o P4 (agora resolvido, ver D13). O vetor
+original do P6 (`superadmin-login` contornável via spoof de
+`X-Forwarded-For`) **deixou de existir** com a correção do P4 — o rate
+limiter agora é efetivamente por IP real. O que **sobra**, registrado em
+20/07/2026: `POST /api/v2/auth/superadmin-login` nunca teve Turnstile
+(decisão original: "painel interno, não é público") e continua com o
+rate limiter (agora correto) como única barreira — um ataque distribuído
+por IPs reais diferentes não é resolvido pelo P4 nem por rate limit em
+geral. Hardening interino a avaliar (nenhum implementado ainda):
 - Adicionar Turnstile também no `superadmin-login` (muda o contrato da
   rota — precisa de golden master atualizado e do frontend do painel
   superadmin ajustado para enviar o token).
-- Allowlist de IP de origem pro painel superadmin (mais simples, mas
-  também depende de `req.ip` confiável — bloqueado pelo mesmo P4).
-- Resolver o P4 primeiro deixa as duas opções acima mais simples/seguras
-  de implementar depois.
+- Allowlist de IP de origem pro painel superadmin (mais simples, e agora
+  viável — o P4 garante que `req.ip` é confiável).
+Sem prazo definido — decisão do Vagner.
 
 ## ✅ Tomadas
 
@@ -187,3 +163,27 @@ pipeline vivo, e o refinamento é sobre leads já mortos cuja "chance de
 reabordagem" é hipótese de negócio, não requisito técnico/compliance.
 Reavaliar depois da migração base completa, se a equipe comercial pedir
 reabordagem de cancelados recentes especificamente.
+
+### D13 — P4 resolvida: Traefik corrigido pra confiar em `X-Forwarded-For`
+só da Cloudflare, não de qualquer cliente (20/07/2026). Contexto: P4
+(achada 19/07/2026) — o Traefik (`easypanel-traefik`, Swarm) tinha
+`forwardedHeaders.insecure=true` nos entrypoints `http`/`https`,
+confiando cegamente em qualquer `X-Forwarded-For` que o cliente mandasse,
+sem exceção. Investigação (`crm/p4-traefik-runbook.md`) mapeou os 24
+domínios atrás deste Traefik via `dig`: só o universo `*.imovizapp.com` +
+`www.arkontech.com.br` passa pela Cloudflare — todo o resto (incluindo
+`routercasagora.arkontech.com.br`, o domínio que expôs o bug) bate direto
+na VPS. Escolha: `trustedIPs` = só os ranges publicados da Cloudflare
+(v4+v6, sem incluir rede interna do Swarm — fronteira de confiança
+diferente, já resolvida em cada app). Aplicado via `docker service
+update` nas env vars do serviço (não há arquivo de config estática,
+tudo vive na spec do Swarm). Validado: checklist de 19 serviços 19/19
+idênticos ao baseline (2 já quebrados antes, não-regressão registrada);
+harness de spoof no domínio direto confirmou bucket estável (9→8→7, era
+sempre 9 antes); teste de bypass via domain-fronting contra domínio
+Cloudflare confirmou headers forjados sendo ignorados (7→6, não
+resetou); login real via Turnstile em `app.imovizapp.com` confirmado
+pelo Vagner em 3 navegadores. Zero rollback necessário. Loose end
+achado (fora do escopo): Zentara e `casagora_router_api_dev` têm rota
+no Traefik apontando pra serviços que não existem mais no Swarm (502
+pré-existente) — faxina futura, não bloqueante.

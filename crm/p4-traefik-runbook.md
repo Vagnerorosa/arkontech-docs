@@ -289,4 +289,67 @@ escopo do P4**:
 
 ## Histórico de execuções
 
-*(preenchido depois da Etapa 2, com o ok explícito do Vagner)*
+### 20/07/2026 — Etapa 2 aplicada, P4 fechado
+
+Aprovado explicitamente pelo Vagner na sessão, com 3 adendos incorporados
+ao plano antes de aplicar (fonte/data dos ranges Cloudflare, validação
+ponta a ponta nas duas classes de tráfego, registro do loose end de
+faxina do Swarm — ver seções 2, 6 e 9).
+
+**Mudança aplicada**:
+```bash
+docker service update \
+  --env-rm TRAEFIK_ENTRYPOINTS_HTTP_FORWARDEDHEADERS_INSECURE \
+  --env-rm TRAEFIK_ENTRYPOINTS_HTTPS_FORWARDEDHEADERS_INSECURE \
+  --env-add TRAEFIK_ENTRYPOINTS_HTTP_FORWARDEDHEADERS_TRUSTEDIPS=<ranges> \
+  --env-add TRAEFIK_ENTRYPOINTS_HTTPS_FORWARDEDHEADERS_TRUSTEDIPS=<ranges> \
+  easypanel-traefik
+```
+Serviço convergiu em ~15s (nova task `Running`, antiga `Shutdown`).
+
+**Validação, em ordem**:
+1. `docker service ps easypanel-traefik` — task nova rodando, sem restart loop.
+2. `/api/entrypoints` (API interna, porta `:8080`) — confirmado: `http` e
+   `https` mostram `"trustedIPs": [...]` (os 22 ranges v4+v6), `"insecure"`
+   **não aparece mais** em nenhum dos dois.
+3. Checklist de 19 serviços — **19/19 idênticos ao baseline pré-mudança**,
+   incluindo os 2 já quebrados (Zentara, router-dev, ambos 502 antes e
+   depois — confirmado que é lixo de config pré-existente, não regressão
+   desta mudança).
+4. Harness de spoof contra `routercasagora.arkontech.com.br` (domínio sem
+   Cloudflare, o que expunha o bug original): 3 requisições,
+   `ratelimit-remaining` **9 → 8 → 7** — sequência decrescente, um único
+   bucket real. Ontem, o mesmo teste resetava pra `9` a cada tentativa com
+   `X-Forwarded-For` diferente. Bug confirmado corrigido.
+5. Teste de bypass via domain-fronting: conexão direta na VPS
+   (`31.97.168.24`) forjando `Host: api.imovizapp.com` (domínio que só
+   deveria ser alcançado via Cloudflare) + `X-Forwarded-For` e
+   `CF-Connecting-IP` forjados — `ratelimit-remaining` **7 → 6**,
+   continuando a mesma sequência (não resetou pra um bucket novo). Prova
+   que o `req.ip` resolve corretamente também na classe de tráfego "via
+   Cloudflare": quem conecta direto na VPS sem passar pela Cloudflare de
+   verdade não consegue mais se passar por ela forjando os headers.
+6. Login real via Turnstile em `https://app.imovizapp.com` (domínio atrás
+   da Cloudflare, tráfego real, não forjado) — confirmado pelo Vagner,
+   testado em 3 navegadores diferentes (Firefox, Edge, Chrome, todos em
+   modo anônimo). Login e navegação normais — o tráfego legítimo via
+   Cloudflare não foi afetado pela mudança.
+
+**Downtime real**: os ~15s de convergência do Swarm (nenhum sintoma de
+indisponibilidade reportado pelos testes, que rodaram logo em seguida).
+
+**P4 — FECHADO.** Nenhum rollback foi necessário. Movido de "Pendentes"
+para "Tomadas" em `DECISOES.md` como D13.
+
+**P6 — parcialmente mitigado, não fechado.** O vetor específico que o P6
+descrevia (`superadmin-login` sem Turnstile, contornável via spoof de
+`X-Forwarded-For`) deixou de existir — o rate limiter agora é
+efetivamente por IP real. O que **sobra** do P6 (registrado, não
+resolvido nesta sessão): `superadmin-login` continua sem uma segunda
+camada de defesa além do rate limiter — um ataque distribuído por IPs
+reais diferentes (não repassa pelo mesmo P4) ainda não teria barreira
+adicional. Recomendação de adicionar Turnstile nessa rota permanece como
+hardening futuro, decisão do Vagner, sem prazo.
+
+**Loose end (seção 9)**: Zentara e `casagora_router_api_dev` seguem como
+faxina futura do Swarm, fora do escopo do P4, não bloqueante.
