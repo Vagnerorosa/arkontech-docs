@@ -85,11 +85,21 @@ config dinâmica (24 hosts):
 | `painel.arkontech.com.br`, `7logs5.easypanel.host`, `traefik.7logs5.easypanel.host` | |
 | redis tools (`*.7logs5.easypanel.host`), `trafego-admin.arkontech.com.br` | |
 
-**Conclusão**: `trustedIPs` = só os ranges publicados da Cloudflare (v4+v6,
-consultados hoje em `cloudflare.com/ips-v4` e `/ips-v6`, idênticos aos
-consultados ontem — estáveis). **Nenhum IP interno precisa entrar na lista**
-— não há cenário legítimo de algo conectando na porta pública 80/443 vindo
-de dentro da rede overlay.
+**Conclusão**: `trustedIPs` = só os ranges publicados da Cloudflare (v4+v6).
+**Nenhum IP interno precisa entrar na lista** — não há cenário legítimo de
+algo conectando na porta pública 80/443 vindo de dentro da rede overlay.
+
+**Fonte e data** (item de re-verificação periódica — ver nota abaixo):
+- `https://www.cloudflare.com/ips-v4/` e `https://www.cloudflare.com/ips-v6/`
+- Consultado em 19/07/2026 e reconsultado em 20/07/2026 — **valores
+  idênticos nas duas datas** (Cloudflare raramente muda esses ranges).
+- **Re-verificar periodicamente**: a Cloudflare pode adicionar/remover
+  ranges (histórico de mudanças é raro, mas existe). Se algum domínio
+  atrás da Cloudflare começar a ter comportamento de rate-limit/IP
+  incorreto no futuro, o primeiro passo é comparar a lista abaixo contra
+  as URLs oficiais de novo antes de suspeitar de outra causa. Sugestão:
+  revisar a cada 6 meses ou quando qualquer sintoma de resolução de IP
+  incorreta aparecer — não há automação disso hoje.
 
 ```
 173.245.48.0/20,103.21.244.0/22,103.22.200.0/22,103.31.4.0/22,141.101.64.0/18,108.162.192.0/18,190.93.240.0/20,188.114.96.0/20,197.234.240.0/22,198.41.128.0/17,162.158.0.0/15,104.16.0.0/13,104.24.0.0/14,172.64.0.0/13,131.0.72.0/22,2400:cb00::/32,2606:4700::/32,2803:f800::/32,2405:b500::/32,2405:8100::/32,2a06:98c0::/29,2c0f:f248::/32
@@ -194,10 +204,39 @@ já armazenados em `/data/acme.json`, só a config de entrypoint muda).
    spoof resetava pra 9 a cada tentativa. **Cuidado com o orçamento
    compartilhado** (10/15min pra todas as 4 rotas de login) — só 3
    requisições neste teste, não repetir sem necessidade.
-5. Confirmar `app.imovizapp.com`/`api.imovizapp.com` (via Cloudflare)
-   continuam funcionando normalmente (login real rápido, sem forçar
-   múltiplas tentativas) — prova que o tráfego real da Cloudflare não foi
-   afetado.
+5. **Domínio atrás da Cloudflare, ponta a ponta** — login real em
+   `https://app.imovizapp.com` completando o desafio Turnstile normalmente
+   (não só `curl`, navegador de verdade). Confirma que o tráfego real via
+   Cloudflare não foi afetado pela mudança (Cloudflare já está em
+   `trustedIPs`, comportamento esperado é idêntico a antes).
+6. **`req.ip` resolvido corretamente nas duas classes de tráfego** — o
+   teste do item 4 já prova a classe "direto" (sem Cloudflare,
+   `routercasagora.arkontech.com.br`). Pra provar a classe "via Cloudflare"
+   com o mesmo rigor, o teste que importa não é o tráfego normal (que já
+   funcionava antes, correto ou não, porque a Cloudflare sempre manda o
+   `CF-Connecting-IP` certo) — é a tentativa de **contornar a Cloudflare**
+   batendo direto na VPS com o `Host` de um domínio "protegido":
+   ```bash
+   # conecta direto no IP da VPS, forjando o Host de um dominio que só
+   # deveria ser alcançado via Cloudflare, + XFF/CF-Connecting-IP forjados
+   curl -s -i -X POST "https://31.97.168.24/api/v2/auth/refresh" \
+     -k --resolve api.imovizapp.com:443:31.97.168.24 \
+     -H "Host: api.imovizapp.com" \
+     -H 'content-type: application/json' \
+     -H 'X-Forwarded-For: 9.9.9.9' -H 'CF-Connecting-IP: 9.9.9.9' \
+     -d '{}' | grep -i ratelimit-remaining
+   ```
+   Antes da mudança, isso funcionava como bypass total (Traefik confiava
+   cegamente, o `casagora-router` via um IP resolvido que parecia vir da
+   Cloudflare só porque o header dizia isso). Depois da mudança: quem
+   conectou de verdade (esta própria VPS/host de teste, não um IP da
+   Cloudflare) não está em `trustedIPs`, então o Traefik descarta o
+   `X-Forwarded-For`/`CF-Connecting-IP` forjados e escreve o IP real da
+   conexão — o `casagora-router` não teria motivo pra confiar no
+   `CF-Connecting-IP` forjado (`isCloudflareEdgeIp` do IP resolvido dá
+   falso). Critério de sucesso: este bucket **não deve resetar** —
+   continua o mesmo bucket já usado nos testes anteriores (mais uma
+   requisição consumida do orçamento compartilhado, ver aviso no item 4).
 
 ## 7. Rollback exato
 
@@ -225,6 +264,26 @@ usado no login principal — endurece contra o cenário em que o rate limiter
 sozinho não é suficiente (ex.: um ataque distribído de IPs reais
 diferentes, que o P4 não resolve nem tenta resolver — rate limit por IP
 não impede um atacante com muitos IPs reais).
+
+## 9. Loose end achado nesta investigação: faxina futura do Swarm
+
+Itens 7 e 17 da seção 3 (`zentara.arkontech.com.br`, `devroutercasagora.arkontech.com.br`)
+apontam pra serviços que **não existem mais** no Swarm (`no such service`
+confirmado), mas a config dinâmica do Traefik (`main.yaml`/`arkontech.yaml`)
+ainda tem os routers/services apontando pra eles — por isso os 502
+constantes. Não é urgente (não afeta nada em produção, só polui o
+diagnóstico com 2 domínios "quebrados" que na real são só lixo de
+configuração). **Registrado aqui como item de faxina futura, fora do
+escopo do P4**:
+- Remover as rotas de `zentara.arkontech.com.br` +
+  `zentara-tint-studio-zentara.7logs5.easypanel.host` de `main.yaml`
+  (produto Zentara encerrado).
+- Decidir se `devroutercasagora.arkontech.com.br`
+  (`casagora_router_api_dev`) ainda é necessário — se sim, recriar o
+  serviço; se não, remover a rota de `arkontech.yaml`.
+- Fazer essa limpeza via UI do EasyPanel quando possível (domínios
+  `*.7logs5.easypanel.host` são gerenciados por lá); `arkontech.yaml` é
+  edição manual, mesmo cuidado de sempre.
 
 ---
 
