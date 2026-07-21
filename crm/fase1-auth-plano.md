@@ -181,6 +181,13 @@ resto do sistema continua em 0 diffs.
 **Rollback**: reverter a imagem — as 2 rotas somem, nada as consumia.
 
 ### Incremento 3 — CRÍTICO: login emite access+refresh, frontend passa a usar
+
+> **STATUS: ✅ CONCLUÍDO em produção, 21/07/2026.** Backend
+> (`0.9.325-fase1a-incremento3-login-refresh-20260721`) e frontend
+> deployados na mesma janela, golden master 0 diffs, 4 cenários de
+> transição validados com prova fresca antes do deploy, smoke test humano
+> em 3 navegadores/3 papéis ok, zero rollback necessário. Detalhe completo
+> em `crm/incremento3-runbook.md`.
 **Escopo**: backend Tasks 1-2 (login e superadmin-login passam a emitir os dois tokens) +
 frontend Tasks 8-11 (`lib/auth.ts`, `login/route.ts`, `types/auth.ts`, `middleware.ts` com
 renovação silenciosa, `logout/route.ts`). **Este é o único incremento que precisa dos dois

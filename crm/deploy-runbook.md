@@ -217,3 +217,27 @@ saudável e que a mudança de infra não introduziu nenhuma regressão:
 
 Nenhuma ação corretiva necessária. Estado de produção confirmado estável
 no dia seguinte ao deploy + à mudança de infra do P4.
+
+### 21/07/2026 — Fase 1A, Incremento 3 (login emite access+refresh + renovação silenciosa)
+
+**Resumo**: primeiro deploy coordenado backend+frontend deste runbook — o
+único incremento da Fase 1A que precisa dos dois repositórios subindo na
+mesma janela. Detalhe completo (preparação, 4 cenários de transição
+re-validados com prova fresca, execução passo a passo, achado sobre
+rollback do frontend) em `crm/incremento3-runbook.md`. Resumo aqui:
+
+- **Backend**: PR#16 mergeado, deploy
+  `0.9.325-fase1a-incremento3-login-refresh-20260721`. Golden master
+  47/47 (0 diffs, gap conhecido do login-corpo-vazio já documentado).
+  Watermarks de intake idênticos antes/depois.
+- **Frontend**: PR#1 mergeado, build+deploy via `docker service update
+  --force` (obrigatório pro Swarm perceber mudança em `:latest`). Achado
+  novo: frontend não tem tag versionada — re-tageamos a imagem atual como
+  `imoviz-frontend:rollback-pre-incremento3-20260721` antes do rebuild,
+  pra ter um alvo de rollback real (este runbook não cobria isso até
+  agora — próximos deploys de frontend devem repetir esse passo).
+- **Smoke test humano**: login real validado pelo Vagner em 3 navegadores
+  (Firefox, Edge, Chrome), todos anônimos, com 3 papéis (Admin, gestor,
+  corretor) — todos logaram e navegaram normalmente.
+- **Zero rollback necessário.** Branches dos dois PRs mantidas (não
+  deletadas ainda, aguardando confirmação de estabilidade contínua).
