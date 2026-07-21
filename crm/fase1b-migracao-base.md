@@ -17,6 +17,12 @@
 > é outra coisa (majoritariamente um link `wa.me/...`, não texto de comentário). Ver seção 2b
 > (nova) para os números corretos e seção 8 (nova) para a proposta de script de import — só
 > leitura e escrita neste documento, nenhum código alterado.
+>
+> **Atualizado de novo em 21/07/2026 (mesmo dia, mais tarde)**: Vagner decidiu as 3 perguntas
+> em aberto da seção 8.4 — registradas como **D14, D15, D16** em `DECISOES.md`. Seção 8
+> reescrita com o de-para de etapas (Step→`deal_stages`, confirmado 1:1) e o cruzamento com
+> `lead_crm_import` (quem precisa CRIAR vs só VINCULAR). **Ainda não é código** — só leitura
+> (schema de produção, export) e este documento.
 
 ## 1. O que já está dentro (`lead_crm_import`)
 
@@ -412,21 +418,25 @@ a equipe comercial pedir reabordagem de cancelados recentes especificamente.
    "precisei olhar algo que só existia lá". Decisão final e prazo exato ficam com o Vagner
    (pergunta 3 do `fase1-nocrm-plano.md`, ainda em aberto).
 
-## 8. Proposta de desenho do script de import (21/07/2026) — PARA DECISÃO, NÃO CODAR AINDA
+## 8. Proposta de desenho do script de import (21/07/2026, revisado com D14-D16) — PARA APROVAÇÃO, NÃO CODAR AINDA
 
 > Levantamento do schema atual (`casagora_router` produção, só leitura) + leitura do código de
-> criação de deal existente (`src/server.js`). Nenhuma tabela criada, nenhuma coluna alterada,
-> nenhum código escrito — é proposta para o Vagner (e quem mais precisar) decidir antes de
-> qualquer implementação.
+> criação de deal existente (`src/server.js`) + export CSV de 21/07 (colunas `Pipeline`/`Step`)
+> + snapshot atual de `lead_crm_import`. Nenhuma tabela criada, nenhuma coluna alterada, nenhum
+> código escrito — é proposta para o Vagner (e quem mais precisar) aprovar antes de qualquer
+> implementação. As 3 perguntas em aberto da versão anterior desta seção foram respondidas
+> (D14, D15, D16 em `DECISOES.md`) e estão incorporadas abaixo.
 
 ### 8.1 Onde os leads migrados devem entrar
 
 **Achado central**: `deals` (a tabela viva do Kanban do Imoviz) e `lead_crm_import` (o espelho
 do noCRM usado por relatórios) são **estruturas paralelas, sem link entre si hoje** —
-`lead_crm_import` tem 14.487 linhas, `deals` tem só **2.515**, e nenhuma delas referencia a
+`lead_crm_import` tem 14.490 linhas, `deals` tem só **2.515**, e nenhuma delas referencia a
 outra. `deals` só é alimentada por dois caminhos: captura manual via Imoviz (`manual_leads` →
 `deals`) e leads do Meta Ads (`lead_events` → `deals`). **Nenhum caminho hoje cria `deals` a
-partir de leads originados no noCRM.**
+partir de leads originados no noCRM** — o que, pela D16, também quer dizer que **nenhum `deal`
+existente hoje pode colidir com um lead migrado** (não há dado de origem noCRM em `deals` para
+duplicar).
 
 Isso significa que, hoje, migrar só para `lead_crm_import` (como a seção 5 antiga sugeria)
 deixaria os 5.730-5.763 leads do corte **invisíveis no Kanban** — apareceriam em relatório, mas
@@ -435,29 +445,50 @@ da D11 ("equipe operando 100% pelo Imoviz"), a migração precisa criar linhas e
 em `lead_crm_import`.
 
 **Proposta**:
-- Para cada um dos 5.730-5.763 leads do corte (won/todo/standby): **criar uma linha em
-  `deals`** se ainda não existir uma equivalente (ver 8.4, risco de duplicata).
-- `lead_crm_import` continua recebendo os mesmos leads via upsert (sync diário já faz isso para
-  quem já está no período de cobertura do sync; para os ~26% do corte que ainda não estão lá —
-  seção 2b — o import roda um upsert avulso, reaproveitando a mesma query de upsert do sync).
-  Mantém os relatórios legados/v2 consistentes (seção 1 já registrou que eles leem dessa
-  tabela).
-- **Nova coluna proposta**: `deals.nocrm_lead_id` (text, nullable, index) — mesmo padrão que
-  `lead_crm_import` e `manual_leads` já usam. Sem isso não dá pra saber depois quais `deals`
-  vieram da migração nem rodar o import de novo com segurança (idempotência via
-  `ON CONFLICT (nocrm_lead_id) DO NOTHING`/`UPDATE`).
-- **Mapeamento de status**: `won` → `deals.status='ganho'`; `todo`/`standby` →
-  `deals.status='para_hoje'`/`'standby'` (valores já em uso, ver enum real observado). `stage_id`
-  (posição no Kanban) não tem mapeamento natural — o CSV traz `Pipeline`/`Step` do noCRM, mas os
-  nomes de etapa do Imoviz são outros. **Pergunta para o Vagner/Casagora**: jogar tudo na
-  primeira etapa (`01 - Lead não Atendido`) e deixar o corretor re-triar, ou vale o esforço de
-  mapear `Step`→etapa mais próxima? Proposta default: primeira etapa para `todo`/`standby`,
-  última etapa (`09 - Assinado`) para `won` — simples, corretor ajusta manualmente se necessário.
+- Para cada um dos 5.750-5.763 leads do corte (won/todo/standby): **criar uma linha nova em
+  `deals`** — sempre criar, nunca checar duplicata por telefone (D16). Identidade única é
+  `nocrm_lead_id`.
+- `lead_crm_import` recebe os mesmos leads via upsert por `nocrm_lead_id` (já é `UNIQUE` nessa
+  tabela) — ver 8.4 para quantos precisam CRIAR vs só atualizar/vincular.
+- **Nova coluna proposta**: `deals.nocrm_lead_id` (text, nullable, `UNIQUE` index) — mesmo
+  padrão que `lead_crm_import` e `manual_leads` já usam. É a chave de idempotência do import
+  (D16): `ON CONFLICT (nocrm_lead_id) DO UPDATE`/`DO NOTHING`, nunca dedup por telefone.
+- **Mapeamento de status**: `won` → `deals.status='ganho'`; `todo` → `'para_hoje'`; `standby` →
+  `'standby'` (valores já em uso, confirmado no enum real de produção).
 - `manual_leads` **não é usado** para a migração — seu schema exige `created_by_user_id` e
   `assigned_agent_id` `NOT NULL` (desenhado para captura humana em tempo real), forçaria valores
   sintéticos sem sentido para um import histórico em lote.
 - Campo `Description` do CSV (o link `wa.me/...`, ver seção 2b) → `deals.notes` (texto livre já
   existente), como contexto de origem, não como comentário.
+
+### 8.1.1 De-para de etapas do Kanban (D15) — confirmado 1:1, sem etapa órfã
+
+Todos os 145.719 leads do export estão num único `Pipeline` do noCRM (`Funil de Vendas`), com
+exatamente **9 valores distintos de `Step`** — o mesmo número de etapas que `deal_stages` tem
+hoje para o tenant Casagora. Comparando nome a nome:
+
+| `Step` (noCRM, export) | Leads no corte (5.750) | `deal_stages` Imoviz (id) | Correspondência |
+|---|---|---|---|
+| `01 - Lead não Atendido` | 186 | `01 - Lead não Atendido` (7) | Exata |
+| `02 - Aguardando Interação` | 1.463 | `02 - Aguardando Interação` (8) | Exata |
+| `03 - Em Atendimento` | 1.235 | `03 - Em Atendimento` (9) | Exata |
+| `04 - Aguardando Documentação` | 423 | `04 - Aguardando Documentação` (10) | Exata |
+| `05 - Enviado para Analise` | 7 | `05 - Enviado para Análise` (11) | Falta acento — normalizar |
+| `06 - Em analise` | 7 | `06 - Em Análise` (12) | Falta acento + capitalização — normalizar |
+| `07 - Avaliado` | 795 | `07 - Avaliado` (13) | Exata |
+| `08 - Proposta Tirada` | 212 | `08 - Proposta Tirada` (14) | Exata |
+| `09 - Assinado` | 1.422 | `09 - Assinado` (15) | Exata |
+
+**Nenhum `Step` sem correspondente.** As 2 diferenças (linhas 5 e 6) são só grafia (falta de
+acento/capitalização diferente) — o import deve comparar por prefixo numérico (`01`-`09`) em
+vez de string exata, ou normalizar acentuação antes de comparar, para não depender de bater
+caractere a caractere.
+
+Como bônus, o cruzamento por status confirma que o mapeamento faz sentido operacional: dos
+1.582 leads `won`, 1.419 (90%) já estão em `09 - Assinado` e mais 129 em `08 - Proposta
+Tirada` — o Step do noCRM reflete de verdade o estágio real da negociação, não é um campo
+solto. **Resolve a pergunta em aberto da versão anterior desta seção — mapear de verdade, não
+jogar tudo numa etapa default.**
 
 ### 8.2 Como os comentários entram
 
@@ -478,6 +509,11 @@ nullable, `created_at`) — é a tabela que já alimenta o timeline de um deal n
   verificar antes se já existem `activities` com aquele `deal_id`+`created_at`+`content` (evita
   duplicar comentário se o import rodar 2x) — ou adicionar uma coluna
   `activities.nocrm_comment_key` (hash do lead_id+posição) só para essa finalidade.
+- **D14 (histórico completo via API)**: o job de `GET /leads/{id}/comments` para os 3.615
+  leads truncados (seção 2b) usa **o mesmo desenho de `activities`** acima — só entra mais
+  linhas por `deal_id` (o histórico completo em vez de só os últimos 4). Não exige nenhum
+  ajuste de schema além do que já está proposto aqui; pode rodar como um segundo passo,
+  depois ou junto do import inicial de leads+comentários, sem retrabalho.
 
 ### 8.3 O que o Imoviz precisa de tela
 
@@ -491,19 +527,37 @@ no timeline sem nenhuma mudança de frontend**, só com um rótulo genérico.
 "📋 Importado do noCRM") — mesmo padrão de código que já existe para `isTask`. Escopo pequeno,
 um componente só.
 
-### 8.4 Riscos e perguntas em aberto (para o Vagner decidir, não assumidas aqui)
+### 8.4 Cruzamento com `lead_crm_import`: quem CRIAR vs quem só VINCULAR (item 2 desta rodada)
 
-1. **Duplicata com deal já existente**: se um corretor já criou manualmente no Imoviz um deal
-   para um cliente que também está no corte de migração (mesmo telefone), o import criaria um
-   segundo `deals`. Sem `nocrm_lead_id` em `deals` hoje, não dá pra checar isso automaticamente
-   além de um match por telefone (arriscado — pode dar falso positivo/negativo). Proposta: rodar
-   um relatório de "possível duplicata por telefone" antes do import real, para revisão humana,
-   não bloquear o import por isso.
-2. **Comentários truncados em 4** (achado da seção 2b): decidir se vale buscar o histórico
-   completo via API para os 3.615 leads do corte que bateram no teto (~2 dias de orçamento de
-   API, ver seção 5) antes ou depois do import de leads+comentários, ou se aceitar "últimos 4"
-   como suficiente por ora.
-3. **Mapeamento de `stage_id`** (Kanban): ver 8.1 — jogar tudo numa etapa default vs. mapear
-   `Step` do noCRM.
-4. **Tenant**: todos os leads do corte são da Casagora (`a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11`)
-   — confirmar que nenhum precisa ir para outro tenant antes de rodar o import em lote.
+Comparado por `nocrm_lead_id`/`ID` (snapshot de `lead_crm_import` de 21/07/2026, 14.490 linhas,
+contra o export de 145.719 leads):
+
+| População | Já tem linha em `lead_crm_import` (VINCULAR/atualizar) | Não tem ainda (CRIAR) |
+|---|---|---|
+| Todos os 145.719 leads do export | 14.473 (9,9%) | 131.246 (90,1%) |
+| **Corte de migração completa (5.750 com CSV)** | **4.243 (73,8%)** | **1.507 (26,2%)** |
+| + 16 leads do corte que só existem no banco (recentes demais pro export) | já têm linha (VINCULAR) | — |
+
+Para o script de import: **em `lead_crm_import`**, os 4.243+16 leads do corte que já têm linha
+levam `UPDATE` (upsert por `nocrm_lead_id`, mesma query do sync diário); os 1.507 restantes
+levam `INSERT` novo. **Em `deals`**, a distinção não se aplica da mesma forma — como nenhum
+`deal` hoje tem origem no noCRM (8.1), **todos os 5.750-5.763 leads do corte levam `INSERT`
+novo em `deals`**, independente de já estarem ou não em `lead_crm_import`. O `ON CONFLICT
+(nocrm_lead_id)` em `deals` serve só para o import poder rodar de novo com segurança (idempotência
+contra re-execução do próprio script), não para decidir criar-vs-vincular numa primeira
+execução.
+
+### 8.5 Riscos e perguntas — RESOLVIDOS (D14, D15, D16 em `DECISOES.md`, 21/07/2026)
+
+1. ~~Duplicata com deal já existente~~ — **resolvido pela D16**: telefone duplicado é regra no
+   noCRM (negociações distintas), não deduplicar por telefone. Como nenhum `deal` hoje tem
+   origem no noCRM (8.1), não há dado pré-existente para colidir — todo lead do corte gera um
+   `deal` novo, sem checagem de duplicata.
+2. ~~Comentários truncados em 4~~ — **resolvido pela D14**: buscar histórico completo via API
+   para os 3.615 leads truncados (não os 5.750 inteiros), ~2 dias de orçamento, combinável com
+   o job de anexos. Ver 8.2.
+3. ~~Mapeamento de `stage_id`~~ — **resolvido pela D15**: etapas do Kanban Imoviz e do funil
+   noCRM são as mesmas, mapeamento 1:1 confirmado no dado real (8.1.1).
+4. **Tenant** (ainda em aberto, não fazia parte desta rodada de decisão): todos os leads do
+   corte são da Casagora (`a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11`) — confirmar que nenhum precisa
+   ir para outro tenant antes de rodar o import em lote.

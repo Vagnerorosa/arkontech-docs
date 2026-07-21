@@ -187,3 +187,46 @@ pelo Vagner em 3 navegadores. Zero rollback necessário. Loose end
 achado (fora do escopo): Zentara e `casagora_router_api_dev` têm rota
 no Traefik apontando pra serviços que não existem mais no Swarm (502
 pré-existente) — faxina futura, não bloqueante.
+
+### D14 — Buscar histórico COMPLETO de comentários via API para os leads
+truncados do corte de migração (21/07/2026). Contexto: o export nativo do
+noCRM só traz os 4 comentários mais recentes por lead (achado em
+`crm/fase1b-migracao-base.md` seção 2b) — 3.615 dos 5.750 leads do corte de
+migração completa (won+todo+standby) batem nesse teto, incluindo **96% dos
+`won`**. Escolha do Vagner: buscar o histórico completo via
+`GET /leads/{id}/comments` para esses 3.615 leads especificamente (não os
+5.750 inteiros), porque o dado fica **irrecuperável depois que a assinatura
+do noCRM for cancelada** (ver plano de adoção, `fase1b-migracao-base.md`
+seção 7) — ao contrário de anexos (que já são tratados como job de API por
+padrão), esse era um gap que o export sozinho não cobria. Esforço: ~3.615
+requisições, ~2 dias corridos de orçamento de API (2.000/dia) — pequeno
+comparado ao job de anexos (6-9 dias) e combinável com ele (mesmo lead,
+mesma janela de execução, mesmo mecanismo de fila com retomada).
+
+### D15 — Etapas do Kanban do Imoviz são as MESMAS do funil do noCRM,
+mapeamento ~1:1 (21/07/2026). Contexto: `deal_stages` do Imoviz (tenant
+Casagora) tem 9 etapas (`01 - Lead não Atendido` … `09 - Assinado`); o
+export do noCRM tem uma coluna `Step` com exatamente 9 valores distintos,
+todos os 145.719 leads num único `Pipeline` (`Funil de Vendas`). Comparação
+nome a nome (`crm/fase1b-migracao-base.md` seção 8.1): **os 9 valores batem
+1:1** com os 9 `deal_stages`, a menos de acentuação/capitalização em 2 deles
+(`05 - Enviado para Analise`/`06 - Em analise` no CSV vs `Análise` com
+acento nos `deal_stages`) — normalizar no import (comparação
+case/acento-insensível), não é uma etapa sem correspondente. Resolve a
+pergunta em aberto da seção 8.1/8.4 (mapear `Step`→etapa vs jogar tudo numa
+etapa default): mapear de verdade, é direto e o dado já bate.
+
+### D16 — Telefone duplicado é regra no noCRM (negociações distintas da
+mesma pessoa), NÃO deduplicar por telefone (21/07/2026). Contexto: a seção
+8.4 antiga levantava risco de duplicata entre um `deal` já existente no
+Imoviz e um lead migrado com o mesmo telefone. O Vagner esclareceu que
+telefone repetido no noCRM é **intencional** (o mesmo cliente pode ter mais
+de uma negociação/lead ativa ao longo do tempo) — deduplicar por telefone
+juntaria negociações que devem continuar separadas. **Chave de identidade
+do import é `nocrm_lead_id`** (único por construção, já é `UNIQUE` em
+`lead_crm_import`) — dedup/idempotência do import é só contra
+re-importação do mesmo `nocrm_lead_id`, nunca por telefone. Como nenhum
+`deal` existente hoje tem origem no noCRM (achado da seção 8.1: `deals` e
+`lead_crm_import` são estruturas paralelas sem link), não há risco de
+colisão com dado pré-existente — todo lead do corte de migração gera um
+`deal` novo, sem checagem de duplicata por telefone.
