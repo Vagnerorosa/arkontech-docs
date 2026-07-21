@@ -9,6 +9,14 @@
 > chegaram, completando a série de 3 arquivos (145.619 leads, cobertura total set/2019-jul/2026
 > sem buraco). Seção 2 (export CSV) e seção 6 (proposta de corte) foram reescritas com os
 > números finais — ver nota "ATUALIZADO 19/07/2026" em cada uma.
+>
+> **Atualizado em 21/07/2026**: chegou o export com comentários dedicados (3 novos arquivos,
+> `nocrm-leads-2026-07-21-*.csv`, ~176MB). **Correção importante**: a seção 2 original dizia
+> "`Description` = os comentários" — isso estava **errado**. O export de 21/07 tem colunas
+> próprias de comentário (`Comment 1/2/3` + `...`) e, comparando linha a linha, `Description`
+> é outra coisa (majoritariamente um link `wa.me/...`, não texto de comentário). Ver seção 2b
+> (nova) para os números corretos e seção 8 (nova) para a proposta de script de import — só
+> leitura e escrita neste documento, nenhum código alterado.
 
 ## 1. O que já está dentro (`lead_crm_import`)
 
@@ -162,11 +170,94 @@ Created_from, Description`.
 **Nenhuma coluna de anexo, contagem de arquivo, ou nome de arquivo.** Confirma a D11
 diretamente no dado real, não só na documentação.
 
-**`Description` = os comentários.** Recontado sobre os 3 arquivos (145.619 linhas): **94,6%**
-têm conteúdo (contra 29% no banco, `lead_crm_import`) — texto livre concatenado (respostas de
-formulário + notas manuais dos corretores), confirmado lendo amostras. Levemente abaixo dos
-99,5% observados só no 1º arquivo (era o recorte com a marcação de "incluir comentários" mais
-consistente); ainda assim, uma cobertura muito maior que a do banco.
+**~~`Description` = os comentários~~ — CORRIGIDO em 21/07/2026, ver seção 2b.** Esta seção
+achava que `Description` (94,6% preenchido) era o campo de comentários. Com o export de
+21/07/2026 (que tem colunas próprias de comentário), ficou provado que não é — `Description`
+é outra coisa (majoritariamente um link `wa.me/...` da origem do lead), sem relação com o
+texto de `Comment 1/2/3/...`. O número de 94,6% em si continua correto (é quanto `Description`
+está preenchido), só a interpretação "isso são os comentários" estava errada. Ver seção 2b
+para os números certos de comentário.
+
+## 2b. Export com comentários dedicados (21/07/2026) — a peça que faltava
+
+Três novos arquivos, `/root/nocrm-export/nocrm-leads-2026-07-21-{ODA5MDI,ODA5MDM,ODA5MDQ}.csv`,
+mesmo formato do export de 19/07 (ISO-8859-1 → UTF-8, `;` como separador), convertidos e
+analisados linha a linha (`csv.DictReader`, não `wc -l`, mesmo motivo de antes — campos com
+quebra de linha embutida).
+
+### Validação da base (item 1)
+
+- **145.719 leads únicos** nos 3 arquivos somados (50.000 + 50.000 + 45.719). **Zero IDs
+  duplicados** entre os 3 arquivos.
+- Comparado com os 145.619 IDs do export de 19/07: **os 145.619 estão todos presentes** (nenhum
+  sumiu) **+ 100 IDs novos**, todos com `Created_at` entre 19/07 01:09 e 21/07 03:45 — exatamente
+  a janela entre os dois exports. Não é inconsistência, é o CRM vivo recebendo lead novo
+  normalmente (87 `todo`, 11 `cancelled`, 2 `standby`).
+- **Período**: setembro/2019 a julho/2026, **83 meses, 0 buracos** — reconfirmado, mesmo
+  resultado do export de 19/07.
+- Encoding pós-conversão (ISO-8859-1 → UTF-8): checado por amostragem (>20.000 células de
+  `Comment N`/`Nome Completo`) — acentuação (á, é, í, ó, ú, ã, õ, ç) presente e correta em
+  milhares de células, **nenhum padrão de mojibake encontrado**. Exemplos legíveis:
+  `"...cliente não tem como aumentar a renda..."`, `"...cliente tem terreno e vai construir
+  no próprio terreno..."`.
+
+### Comparação com o export de 19/07 (item 3, sanity check)
+
+Distribuição ano × status do CSV bruto (sem merge com o banco) comparada arquivo a arquivo:
+**2019 a 2023 são byte-a-byte idênticos** entre os dois exports (won/todo/standby/cancelled/lost
+por ano, todos os números batem exatamente). Só **2024-2026** mudam — esperado, é onde o
+pipeline vivo se move (leads trocando de status a cada dia) — e a movimentação observada é
+consistente com 2 dias de operação normal (ex.: 2026 `todo` 1.778→1.994, `standby` 514→329,
+`cancelled` 11.422→11.490). **Nenhuma mudança fora do esperado.**
+
+### Comentários: onde estão, de verdade (item 2)
+
+**Colunas dedicadas**: `Comment 1`, `Comment 2`, `Comment 3`, `...` — não existiam no export de
+19/07 (só apareceram agora). Cada uma contém **um comentário individual**, formato
+`[AAAA-MM-DD HH:MM] <tipo> <texto>` (ex.: `[2024-12-03 08:34] Whats Audio Cliente não tem como
+aumentar a renda...`), em **ordem decrescente de data** — `Comment 1` é sempre o mais recente,
+`...` é sempre o 4º mais recente (confirmado comparando timestamps dentro da mesma linha em
+centenas de exemplos).
+
+**Achado importante — limite de 4 comentários por lead**: a coluna `...` nunca contém mais de
+um comentário (nunca há 2 timestamps na mesma célula, verificado nas 145.719 linhas) — ou seja,
+o export só traz **os 4 comentários mais recentes**, não o histórico completo. Um lead com 7
+comentários reais no noCRM aparece aqui com só os últimos 4; os 3 mais antigos **não estão em
+nenhum lugar deste export**. Isso corrige uma suposição da seção 3 ("comentários via API é
+redundante com o export nativo") — é redundante **só para leads com ≤3 comentários no total**;
+para quem tem mais, o export dá uma janela parcial (as interações mais recentes), não o
+histórico completo. Decisão proposta na seção 8.
+
+**Estatísticas gerais (145.719 leads)**:
+
+| Métrica | Valor |
+|---|---|
+| Leads com ≥1 comentário real | 133.715 (91,8%) |
+| Distribuição (0/1/2/3/4 comentários) | 12.004 / 21.246 / 23.462 / 22.025 / 66.982 |
+| Média de comentários/lead (todos, incl. 0) | 2,76 |
+| Mediana de comentários/lead (todos, incl. 0) | 3 |
+| Média entre os que têm ≥1 | 3,01 |
+| Mediana entre os que têm ≥1 | 4 |
+| **Batendo no teto de 4** (risco de histórico truncado) | 66.982 (46,0% de todos os leads) |
+
+**Estatísticas no corte de migração completa (won+todo+standby)** — o corte real hoje no banco
+é **5.763** leads (1.582 won + 1.601 todo + 2.580 standby; 33 a mais que os 5.730 de 19/07 —
+churn normal de 2 dias de pipeline, não é uma correção de erro). Dos 5.763, **5.750 têm linha no
+CSV de 21/07** (13 são recentes demais, só no banco):
+
+| Métrica | Valor |
+|---|---|
+| Têm ≥1 comentário real | 5.401 / 5.750 (93,7%) |
+| Média de comentários (entre os que têm) | 3,30 |
+| Mediana | 4 |
+| Volume total de texto de comentários | ~1.955.718 caracteres (~1,9 MB) |
+| **Batendo no teto de 4** — por status | **won: 1.518/1.582 (96,0%)** · standby: 1.550/2.579 (60,1%) · todo: 547/1.589 (34,4%) |
+
+O achado de 96% dos leads `won` batendo no teto **é o dado mais relevante desta análise**: é
+justamente o grupo com o relacionamento mais longo (ciclo de venda completo) que mais
+provavelmente tem histórico de comentário cortado pelo export. `standby` (nutrição ao longo de
+meses) também bate alto. `todo` (pipeline mais recente/curto) bate bem menos. Ver proposta na
+seção 8 para o que fazer com isso.
 
 ## 3. API v2 do noCRM — documentação oficial
 
@@ -178,7 +269,7 @@ Fonte: `nocrm.io/api` (Sources: [nocrm.io API Reference](https://www.nocrm.io/ap
 |---|---|---|
 | `/api/v2/leads` | GET | Listar leads (paginado) |
 | `/api/v2/leads/{id}` | GET | Detalhe de um lead |
-| `/api/v2/leads/{id}/comments` | GET | Comentários — **redundante com o export nativo**, não precisa via API |
+| `/api/v2/leads/{id}/comments` | GET | Comentários — **redundante só para leads com ≤3 comentários no total** (ver seção 2b); para os que batem no teto de 4 do export, é a única forma de pegar o histórico completo |
 | `/api/v2/leads/{id}/attachments` | GET | Lista os anexos do lead (metadados) |
 | `/api/v2/leads/{id}/attachments/{attachment_id}` | GET | **Download de um anexo — só um de cada vez** |
 
@@ -236,21 +327,27 @@ Sem alternativa (seção 3). Desenho do job:
    (Docker volume nomeado, ver Fase 10 "Gestão do Lead") — associados ao `deal` local
    correspondente (criar o deal primeiro, se ainda não existir, a partir do export de leads).
 
-### Esforço estimado — ATUALIZADO 19/07/2026 com a base completa
+### Esforço estimado — ATUALIZADO 21/07/2026 com o export de comentários em mãos
 
-- **Leads + comentários (export nativo)**: ✅ **concluído nesta etapa** — os 3 exports que
-  cobrem o período inteiro (2019-09 a 2026-07, sem buraco) já foram obtidos e validados (seção
-  2). Falta só o script de import (parser CSV → upsert em `lead_crm_import` e/ou `deals`,
-  reaproveitando o padrão de upsert que já existe pro sync) — poucos dias de trabalho, sem
-  dependência de orçamento de API.
-- **Anexos (API + n8n)**: com o corte real da seção 6 (**5.730 leads**, não mais a estimativa
-  de ~4.900) e o mesmo chute conservador de 2-3 requisições por lead (1 lista + 1-2 downloads),
-  fica em **~11.460-17.190 requisições** — **6 a 9 dias corridos** de job rodando no teto
-  diário de 2.000/dia, sem contar o tempo de montar o workflow n8n em si.
+- **Leads + comentários (export nativo)**: ✅ **totalmente resolvido para leads com ≤3
+  comentários no total, e "últimos 4" para o resto** — os 3 exports de comentário (seção 2b)
+  chegaram, cobrem o período inteiro sem buraco, e **não dependem de orçamento de API**. O
+  import (script novo, proposta na seção 8) pode começar **a qualquer momento** — não há mais
+  bloqueio de dado faltando. Esforço do script em si: poucos dias (parser CSV → `deals` +
+  `activities`, reaproveitando padrão de upsert existente).
+- **Comentários além dos 4 mais recentes (achado da seção 2b)**: opcional, só via API. Afeta
+  majoritariamente `won` (96% bate no teto) e `standby` (60%) do corte de migração completa.
+  Escopo pequeno se decidido: só os **3.615 leads do corte que bateram no teto** (não os 5.750
+  inteiros) precisam de `GET /leads/{id}/comments` — 1 requisição cada, **~2 dias** de orçamento
+  de API (bem menor que o job de anexos, pode até ser combinado com ele já que visita os mesmos
+  leads). Decisão de fazer ou não fica com o Vagner/Casagora — ver seção 8.
+- **Anexos (API + n8n)**: **sem mudança** — continua em **6 a 9 dias corridos** de job para os
+  5.730-5.763 leads do corte (2-3 requisições por lead, 1 lista + 1-2 downloads, teto de
+  2.000/dia). O gargalo real da migração completa permanece sendo anexos, não comentários.
 - **Se o refinamento opcional for adotado** (promover `cancelled` dos últimos 12 meses para
   "completo", ver seção 6) — o corte sobe para **26.526 leads**, ~53.000-80.000 requisições,
-  **27 a 40 dias corridos** de job. Decisão de fazer ou não fica com o Vagner; não é o corte
-  recomendado por padrão.
+  **27 a 40 dias corridos** de job de anexos. Decisão de fazer ou não fica com o Vagner; não é
+  o corte recomendado por padrão.
 
 ## 6. Proposta de corte: quem ganha migração completa vs. histórico raso — NÚMEROS FINAIS
 
@@ -273,6 +370,12 @@ leads+comentários já traz.
 **Total do corte "completo": 5.730 leads** (contra a estimativa anterior de ~4.900 — a base
 real é ~17% maior, mas ainda numa ordem de grandeza tratável para o orçamento de 2.000
 req/dia da API, ver seção 5).
+
+> **Nota 21/07/2026**: recontado no banco atual, o corte já é **5.763** (won 1.582 + todo 1.601
+> + standby 2.580) — +33 em relação aos 5.730 acima, churn normal de 2 dias de pipeline vivo
+> (leads mudando de status, não é correção de erro). O critério e a decisão desta seção
+> continuam os mesmos; o número exato do corte só é fixado no dia em que o import realmente
+> rodar (seção 8).
 
 ### Refinamento (agora quantificado — antes era especulativo)
 
@@ -308,3 +411,99 @@ a equipe comercial pedir reabordagem de cancelados recentes especificamente.
 4. **Cancelamento da assinatura**: só depois da rede de segurança sem nenhum incidente de
    "precisei olhar algo que só existia lá". Decisão final e prazo exato ficam com o Vagner
    (pergunta 3 do `fase1-nocrm-plano.md`, ainda em aberto).
+
+## 8. Proposta de desenho do script de import (21/07/2026) — PARA DECISÃO, NÃO CODAR AINDA
+
+> Levantamento do schema atual (`casagora_router` produção, só leitura) + leitura do código de
+> criação de deal existente (`src/server.js`). Nenhuma tabela criada, nenhuma coluna alterada,
+> nenhum código escrito — é proposta para o Vagner (e quem mais precisar) decidir antes de
+> qualquer implementação.
+
+### 8.1 Onde os leads migrados devem entrar
+
+**Achado central**: `deals` (a tabela viva do Kanban do Imoviz) e `lead_crm_import` (o espelho
+do noCRM usado por relatórios) são **estruturas paralelas, sem link entre si hoje** —
+`lead_crm_import` tem 14.487 linhas, `deals` tem só **2.515**, e nenhuma delas referencia a
+outra. `deals` só é alimentada por dois caminhos: captura manual via Imoviz (`manual_leads` →
+`deals`) e leads do Meta Ads (`lead_events` → `deals`). **Nenhum caminho hoje cria `deals` a
+partir de leads originados no noCRM.**
+
+Isso significa que, hoje, migrar só para `lead_crm_import` (como a seção 5 antiga sugeria)
+deixaria os 5.730-5.763 leads do corte **invisíveis no Kanban** — apareceriam em relatório, mas
+não em nenhuma tela onde um corretor efetivamente trabalha um lead. Para bater com o objetivo
+da D11 ("equipe operando 100% pelo Imoviz"), a migração precisa criar linhas em `deals`, não só
+em `lead_crm_import`.
+
+**Proposta**:
+- Para cada um dos 5.730-5.763 leads do corte (won/todo/standby): **criar uma linha em
+  `deals`** se ainda não existir uma equivalente (ver 8.4, risco de duplicata).
+- `lead_crm_import` continua recebendo os mesmos leads via upsert (sync diário já faz isso para
+  quem já está no período de cobertura do sync; para os ~26% do corte que ainda não estão lá —
+  seção 2b — o import roda um upsert avulso, reaproveitando a mesma query de upsert do sync).
+  Mantém os relatórios legados/v2 consistentes (seção 1 já registrou que eles leem dessa
+  tabela).
+- **Nova coluna proposta**: `deals.nocrm_lead_id` (text, nullable, index) — mesmo padrão que
+  `lead_crm_import` e `manual_leads` já usam. Sem isso não dá pra saber depois quais `deals`
+  vieram da migração nem rodar o import de novo com segurança (idempotência via
+  `ON CONFLICT (nocrm_lead_id) DO NOTHING`/`UPDATE`).
+- **Mapeamento de status**: `won` → `deals.status='ganho'`; `todo`/`standby` →
+  `deals.status='para_hoje'`/`'standby'` (valores já em uso, ver enum real observado). `stage_id`
+  (posição no Kanban) não tem mapeamento natural — o CSV traz `Pipeline`/`Step` do noCRM, mas os
+  nomes de etapa do Imoviz são outros. **Pergunta para o Vagner/Casagora**: jogar tudo na
+  primeira etapa (`01 - Lead não Atendido`) e deixar o corretor re-triar, ou vale o esforço de
+  mapear `Step`→etapa mais próxima? Proposta default: primeira etapa para `todo`/`standby`,
+  última etapa (`09 - Assinado`) para `won` — simples, corretor ajusta manualmente se necessário.
+- `manual_leads` **não é usado** para a migração — seu schema exige `created_by_user_id` e
+  `assigned_agent_id` `NOT NULL` (desenhado para captura humana em tempo real), forçaria valores
+  sintéticos sem sentido para um import histórico em lote.
+- Campo `Description` do CSV (o link `wa.me/...`, ver seção 2b) → `deals.notes` (texto livre já
+  existente), como contexto de origem, não como comentário.
+
+### 8.2 Como os comentários entram
+
+**Achado**: já existe `activities` (FK `deal_id`, colunas `type`, `content`, `user_id`
+nullable, `created_at`) — é a tabela que já alimenta o timeline de um deal na tela
+(`ActivityFeed.tsx`, ver 8.3). **Não precisa de tabela nova.**
+
+**Proposta**: cada `Comment N`/`...` não-vazio do CSV vira **uma linha em `activities`**:
+- `type = 'nocrm_comment'` (valor novo, distinto de `stage_change`/`note`/`task` já em uso —
+  permite filtrar/estilizar diferente na tela sem confundir com nota feita dentro do Imoviz).
+- `content` = o texto do comentário, sem o prefixo de timestamp (que vira `created_at`).
+- `created_at` = a data/hora **original** do comentário (extraída do prefixo `[AAAA-MM-DD
+  HH:MM]`), não a data do import — para o timeline ficar cronologicamente correto.
+- `user_id` = `NULL` — o CSV só tem o nome do usuário do noCRM em texto livre (coluna `User`),
+  sem garantia de bater 1:1 com um `app_users.id`; melhor deixar nulo e, se quiser, guardar o
+  nome original em `content` (prefixo "Fulano: ...") do que arriscar associar ao usuário errado.
+- Idempotência: como `activities` não tem uma chave natural de origem, a proposta é o script
+  verificar antes se já existem `activities` com aquele `deal_id`+`created_at`+`content` (evita
+  duplicar comentário se o import rodar 2x) — ou adicionar uma coluna
+  `activities.nocrm_comment_key` (hash do lead_id+posição) só para essa finalidade.
+
+### 8.3 O que o Imoviz precisa de tela
+
+**Achado**: `ActivityFeed.tsx` (`frontend/src/components/pipeline/`) já renderiza qualquer
+`activities.type` que não seja especificamente tratado (hoje só `task` tem lógica dedicada,
+ver `isTask`/`isDone`/`isOverdue`). Isso quer dizer que comentários migrados **já apareceriam
+no timeline sem nenhuma mudança de frontend**, só com um rótulo genérico.
+
+**Ajuste pequeno proposto** (não obrigatório para funcionar, recomendado para clareza): em
+`ActivityFeed.tsx`, tratar `type === 'nocrm_comment'` como um caso à parte (ex.: ícone/etiqueta
+"📋 Importado do noCRM") — mesmo padrão de código que já existe para `isTask`. Escopo pequeno,
+um componente só.
+
+### 8.4 Riscos e perguntas em aberto (para o Vagner decidir, não assumidas aqui)
+
+1. **Duplicata com deal já existente**: se um corretor já criou manualmente no Imoviz um deal
+   para um cliente que também está no corte de migração (mesmo telefone), o import criaria um
+   segundo `deals`. Sem `nocrm_lead_id` em `deals` hoje, não dá pra checar isso automaticamente
+   além de um match por telefone (arriscado — pode dar falso positivo/negativo). Proposta: rodar
+   um relatório de "possível duplicata por telefone" antes do import real, para revisão humana,
+   não bloquear o import por isso.
+2. **Comentários truncados em 4** (achado da seção 2b): decidir se vale buscar o histórico
+   completo via API para os 3.615 leads do corte que bateram no teto (~2 dias de orçamento de
+   API, ver seção 5) antes ou depois do import de leads+comentários, ou se aceitar "últimos 4"
+   como suficiente por ora.
+3. **Mapeamento de `stage_id`** (Kanban): ver 8.1 — jogar tudo numa etapa default vs. mapear
+   `Step` do noCRM.
+4. **Tenant**: todos os leads do corte são da Casagora (`a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11`)
+   — confirmar que nenhum precisa ir para outro tenant antes de rodar o import em lote.
