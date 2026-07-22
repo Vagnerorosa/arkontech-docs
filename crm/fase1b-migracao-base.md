@@ -681,6 +681,109 @@ execução.
    o job de anexos. Ver 8.2.
 3. ~~Mapeamento de `stage_id`~~ — **resolvido pela D15**: etapas do Kanban Imoviz e do funil
    noCRM são as mesmas, mapeamento 1:1 confirmado no dado real (8.1.1).
-4. **Tenant** (ainda em aberto, não fazia parte desta rodada de decisão): todos os leads do
-   corte são da Casagora (`a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11`) — confirmar que nenhum precisa
-   ir para outro tenant antes de rodar o import em lote.
+4. ~~Tenant~~ — **resolvido implicitamente**: a integração noCRM é exclusiva da Casagora (um
+   único subdomínio `NOCRM_SUBDOMAIN=casagora`, nunca usado pelo outro tenant do Imoviz) — não
+   existe lead do corte de outro tenant por construção. Confirmado na prática: as 4.128
+   migrações do teste (seção 8.6) foram 100% para `a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11`, sem
+   nenhum erro ou ambiguidade de tenant.
+
+## 8.6 Implementação e teste do script de import (22/07/2026) — CÓDIGO ESCRITO E TESTADO, NÃO RODADO EM PRODUÇÃO
+
+Escopo desta rodada, por pedido explícito: **`deals` + `activities` + `deal_attachments`**.
+`lead_crm_import` (seção 8.4) ficou de fora deliberadamente — próximo passo separado, não
+esquecido.
+
+### O que foi construído
+
+- **`scripts/nocrm-import-job.js`** (novo, `casagora-router`) — lê o export CSV (metadados do
+  lead) + `nocrm_comments_raw`/`nocrm_attachments_raw` (staging já extraído, ver
+  `fase1b-job-api.md`) e faz upsert em `deals`/`activities`/`deal_attachments`.
+- **3 colunas novas** (migração em `server.js`/`ensureSchema()`, roda no próximo deploy normal
+  — NÃO aplicada em produção nesta sessão): `deals.nocrm_lead_id` (unique), `activities.
+  nocrm_comment_key` (unique, `'c' + id do comentário na noCRM` — chave real, não hash
+  sintético), `deal_attachments.storage_backend` (default `'local'`) +
+  `deal_attachments.nocrm_attachment_id` (unique). D16 respeitado: nenhuma chave de
+  idempotência é telefone.
+- **Modo `--dry-run` real, não simulado**: roda a mesma lógica dentro de uma transação que
+  termina sempre em `ROLLBACK` — exercita constraints/erros de verdade sem gravar nada
+  (diferente de ter um caminho de código separado "só imprime", que arriscaria divergir do
+  comportamento real).
+- **Fonte dos dados do lead = CSV, não a API ao vivo** (decisão tomada durante a implementação):
+  a API não tem telefone/e-mail/CPF como campos estruturados (só dentro de `description` em
+  texto livre) — o CSV já tinha essas colunas dedicadas e, por ser arquivo estático em disco,
+  não depende da assinatura do noCRM continuar ativa (mesmo princípio que motivou a extração
+  via API pros comentários/anexos).
+- **Anexos — caminho de serviço definido e implementado**: `GET .../attachments/:fileId` em
+  `server.js` ganhou um branch por `storage_backend` — `'r2'` faz proxy via `rclone cat`
+  (pipe direto pro `res`), `'local'` mantém o `sendFile` de sempre. Escolhido em vez de URL
+  assinada porque preservar `Content-Disposition`/`Content-Type` controlados por nós exigiria
+  assinar com overrides (SDK S3 novo, dependência a mais) — o proxy reaproveita a mesma
+  ferramenta (`rclone`) já usada pro upload, sem dependência nova. **Custo aceito**: bytes
+  passam pelo processo Node em vez de ir direto do R2 — aceitável pro volume/tamanho real de
+  documentos de lead. `Dockerfile` ganhou o pacote `rclone` (build-time, inofensivo até alguém
+  buildar+deployar) — **falta** montar `/root/.config/rclone` no serviço Swarm antes de
+  qualquer deploy real (mudança de infra separada, não feita nesta sessão).
+- **Dependência nova**: `csv-parse` (substituiu uma tentativa com `xlsx`, que já era dependência
+  do repo mas travou/estourou memória nos exports de ~50k linhas — `xlsx` materializa um objeto
+  de planilha completo por célula, `csv-parse` só tokeniza; ~4,6s pro maior arquivo, 74MB).
+- **`agent_id`**: melhor esforço por nome (`agents.full_name`, normalizado sem acento/caixa,
+  por tenant) — sem casar ou casar ambíguo (>1 agente com mesmo nome) fica `NULL`, nunca
+  arrisca associação errada (mesmo princípio D16/seção 8.2 aplicado a `deals.agent_id`, que o
+  desenho original não tinha coberto explicitamente).
+
+### Teste — banco clonado de produção, nunca produção
+
+Clone via `pg_dump`/restore (`casagora_router_import_test`, no mesmo Postgres, nome distinto e
+óbvio) — **script nunca conectou em `casagora_router`** (produção) durante os testes.
+
+| Corrida | Resultado |
+|---|---|
+| Dry-run, 10 leads | 10 criados, 78 comentários, 0 erros — `ROLLBACK` confirmado (0 linhas after) |
+| Dry-run, 50 leads | 50 criados, 317 comentários, 0 erros |
+| Real, 50 leads | commit confirmado — 50 `deals` no banco, sem duplicata |
+| Real, 50 leads (2ª vez) | **idempotência**: 0 criados / 50 atualizados, 0 comentários novos / 317 `skipped_dup` |
+| Real, lote completo (4.128) | 4.078 criados + 50 (já existiam do teste) = **4.128/4.128, 0 erros** |
+| Real, lote completo (2ª vez) | **idempotência em escala**: 0 criados / 4.128 atualizados, 0 comentários novos / 33.858 `skipped_dup`, 0 anexos novos / 27 `skipped_dup` |
+
+**Validação cruzada forte**: os `deals.status` do lote migrado bateram **exato** com os números
+já verificados da seção 6/8.1.1 — `ganho`=1.582, `para_hoje`=2.186, `standby`=360 (soma 4.128).
+Nenhum erro de mapeamento de etapa (D15) nem de status em 4.128 leads reais.
+
+Comentários: 33.858 migrados (extração ainda em andamento no momento do teste — 2.545 leads
+ainda sem comentário extraído ficaram só com o `deal` criado, sem `activities`; entram sozinhos
+numa próxima corrida do import, sem duplicar os já feitos). Anexos: só 27 (fase de anexos mal
+começou, ver `fase1b-job-api.md` §16.8).
+
+### Não feito nesta rodada (registrado, não esquecido)
+
+- `lead_crm_import` (seção 8.4) — fora do escopo pedido.
+- Montagem do `rclone` no serviço Swarm de produção (`casagora_router_api`) — pré-requisito de
+  deploy, não uma mudança de código.
+- Nenhum deploy: `server.js`/`Dockerfile` só commitados — a migração de schema só roda quando
+  alguém efetivamente buildar+deployar a imagem nova.
+- Banco de teste (`casagora_router_import_test`) deixado no Postgres pra eventual reteste —
+  `DROP DATABASE casagora_router_import_test;` quando não precisar mais.
+
+## 8.7 Ajuste de frontend necessário (levantado, NÃO implementado — pedido explícito)
+
+Escopo levantado, sem código:
+
+1. **Timeline de comentários** (`ActivityFeed.tsx`, `casagora-sistema/frontend/src/components/
+   pipeline/`): já renderiza qualquer `activities.type` não tratado especificamente (fallback
+   genérico, ícone `FileText`) — comentários migrados **já apareceriam sem nenhuma mudança**.
+   Ajuste recomendado, não bloqueante: adicionar `'nocrm_comment'` ao union type `ActivityType`
+   (`src/types/crm.ts`) e um ícone/rótulo próprio no `ICONS` record (ex.: "📋 Importado do
+   noCRM"), mesmo padrão que `isTask` já usa ali. **Esforço: pequeno, 1 componente + 1 tipo,
+   ~1-2h.**
+2. **Anexos** (`AttachmentsSection.tsx` + `deal_attachments` API): **nenhuma mudança
+   necessária** — a listagem e o download já são genéricos (não expõem `stored_path`/
+   `storage_backend` ao cliente, `DealAttachment` type não muda) e o proxy BFF
+   (`src/app/api/crm/deals/[id]/attachments/[fileId]/route.ts`) já repassa o binário e os
+   headers de `Content-Disposition`/`Content-Type` que vêm do backend sem olhar de onde vieram
+   — o branch `storage_backend='r2'` do backend (seção 8.6) é transparente pro frontend.
+   **Esforço: zero.**
+3. **Nenhum outro ajuste identificado** — `deals`/pipeline/Kanban não precisam saber que um
+   deal veio do noCRM pra funcionar (mesmas colunas que qualquer outro deal usa).
+
+**Esforço total estimado: pequeno (~1-2h), só o ícone/rótulo de comentário — tudo o mais já
+funciona sem tocar em frontend.**
