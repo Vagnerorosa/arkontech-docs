@@ -574,3 +574,80 @@ Um job de migração que compartilha `NOCRM_API_KEY` com produção **nunca pode
 disponível a qualquer hora do dia**, não só "em média". Todo job batch que dispute cota com um
 sistema vivo precisa de teto por hora (ou janela menor), não só teto diário — o teto diário
 sozinho é compatível com uma rajada que zera tudo de manhã e deixa o resto do dia desprotegido.
+
+## 14. Reserva calibrada com dado real (22/07/2026)
+
+Antes de retomar, medido o consumo histórico real de API do app principal (30 dias) — a
+reserva de 1.000/dia da seção 13 era um chute conservador, não uma medição. Fonte: `pg`,
+contagem diária de `nocrm_webhook_events` (distinct `lead_id` por dia — cada lead distinto
+com evento novo dispara **1** chamada `GET /leads/{id}` no worker de refresh, `server.js`
+linha ~2327, `ON CONFLICT (lead_id)` coalesce múltiplos eventos do mesmo lead no mesmo dia
+numa só chamada) + `lead_events` (Facebook Ads) + `manual_leads` + `landing_page_leads`
+(criação de lead, 1 requisição cada) + overhead fixo diário (124 = 24 de `queue-reconcile`
+horário `nocrmSyncUsers` + ~100 do sync incremental diário).
+
+### Achado: o app usa MUITO mais do que a estimativa original de 25h sugeria
+
+| Métrica (30 dias) | Valor |
+|---|---|
+| Média | 645/dia |
+| Mediana | 701/dia |
+| P90 | 870/dia |
+| **Pico** (30/06/2026) | **1.039/dia** |
+
+A amostra de 25h usada antes (seção 10, "uso medido ~100-300/dia") pegou uma janela
+atipicamente calma — o driver real e dominante **não é criação de lead** (Facebook Ads +
+manual + LP somam só ~50-100/dia no pico), é o **worker de refresh disparado por webhook**
+(corretor mexe no lead dentro do próprio noCRM — muda etapa, adiciona comentário, etc. — isso
+dispara um webhook que o app usa pra re-buscar o lead inteiro): até **835 leads distintos por
+dia** no pico, e regularmente 400-700/dia em dias normais de operação.
+
+### Reserva nova: pico + 50% (conforme pedido)
+
+`NOCRM_EXTRACTION_APP_RESERVED_DAILY`: 1.039 × 1,5 = 1.558,5 → **1.560**. Isso **reduz** o teto
+do job, não aumenta — o pico real está bem mais perto do limite de 2.000 da conta do que a
+estimativa original de 1.000 sugeria. **Teto do job cai de 1.000 para 440/dia**
+(`2.000 − 1.560`). Não dava pra saber isso sem medir — o pedido de calibrar com dado real
+revelou o oposto do que se esperava (mais orçamento pro job), mas é o número que a operação
+real sustenta com segurança.
+
+### Teto por hora — variação dia/noite (implementado, simples)
+
+Distribuição por hora UTC dos leads distintos com evento novo (30 dias) mostra uma janela
+clara de uso baixo:
+
+| Faixa UTC | Leads distintos/dia (típico) |
+|---|---|
+| 06h-10h (03h-07h Brasília) | 12-101 — **mínimo do dia** |
+| 11h-20h (08h-17h Brasília) | 700-2.071 — horário comercial |
+| 21h-05h (18h-02h Brasília) | 57-361 — noite, moderado |
+
+Implementado (`scripts/nocrm-extraction-job.js`, commit `48f8557`): teto por hora com dois
+valores — `NOCRM_EXTRACTION_HOURLY_BUDGET_NIGHT=80` na janela `06h-10h UTC`
+(`NOCRM_EXTRACTION_NIGHT_START_UTC`/`_END_UTC`) e `NOCRM_EXTRACTION_HOURLY_BUDGET=10` no
+resto do dia. **A reserva diária (1.560) continua intocada a qualquer hora** — o par dia/noite
+só decide *quando* dentro do teto diário o job pode ir mais rápido, nunca aumenta o total.
+Na prática: a maior parte dos 440/dia deve ser consumida nas 4h da janela noturna (até
+4×80=320), com um trecho pequeno (~120) de mais desses, quando emerge, sobrando pro comércio
+horário como reforço se sobrar orçamento diário.
+
+### ETA recalculado com os números novos
+
+| Fase | Pendente hoje | Requisições/lead | Total | A 440/dia |
+|---|---|---|---|---|
+| **Comentários** | 2.660 (de 4.128 — 1.468 já feitos) | 1 | 2.660 | **~7 dias** |
+| **Anexos** — cenário conservador | 4.123 (de 4.128 — 5 já feitos) | ~2,5 | ~10.308 | **~24 dias** |
+| **Anexos** — cenário observado (amostra de 5) | 4.123 | ~6,4 | ~26.387 | **~60 dias** |
+
+ETA de anexos ficou bem mais longo que a estimativa anterior (7-18 dias) — reflexo direto da
+reserva maior/mais segura. Mesmo tratamento de antes: reportar taxa real assim que a fase de
+anexos começar (relatório diário, seção 10) e recalcular nesse ponto com dado de milhares de
+leads, não 5.
+
+### Estado — pronto pra retomar, aguardando ok explícito
+
+`nocrm-extraction-comments.service` e `nocrm-extraction-attachments.service` seguem
+`disabled`/`inactive` (confirmado após as mudanças de config). `/etc/nocrm-extraction.env` e
+as duas `systemd unit files` já atualizadas com a reserva e o par dia/noite calibrados. Nada
+retoma sozinho — precisa de `systemctl enable --now nocrm-extraction-comments.service`
+explicitamente autorizado pelo Vagner, começando pelos comentários.
