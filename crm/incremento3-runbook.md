@@ -136,8 +136,33 @@ reportado.
   worktree` de teste removidos após a validação dos 4 cenários (eram só
   infra de teste, não fazem parte do histórico do repo).
 - Branches `fase1a-incremento3-login-refresh` e
-  `fase1a-incremento3-frontend-refresh` **mantidas** (não deletadas ainda —
-  aguardando confirmação de estabilidade contínua, por decisão do Vagner).
+  `fase1a-incremento3-frontend-refresh` **deletadas em 22/07/2026** (local +
+  remoto, nos dois repos) após confirmação de estabilidade abaixo — ambas
+  já totalmente mergeadas em `main`/`master`, nada perdido.
+
+### Confirmação de estabilidade — 22/07/2026 (~25h de produção)
+
+Verificado após um dia inteiro de uso real pela equipe da Casagora:
+
+- **Uptime**: `casagora_router_api` e `imoviz_frontend` rodando sem
+  nenhum restart desde o deploy (25h contínuas, réplica única, sem
+  restart loop).
+- **Logs de aplicação** (`casagora_router_api`, 25h): nenhum erro
+  relacionado a auth/JWT/refresh; único achado foi um `BadRequestError:
+  request aborted` isolado (desconexão de cliente em request, padrão do
+  Express, não relacionado à auth).
+- **Traefik access log (25h, status reais)**: zero 5xx nas rotas de
+  `casagora_router_api`/`imoviz_frontend`; zero 401 em `/api/v2/auth/*`
+  especificamente. Os 32 `401` observados no total foram todos o padrão
+  esperado da renovação silenciosa — bursts de 401 em rotas de dado
+  (`/api/agents`, `/api/leads/recent`, `/api/notifications/unread-count`)
+  seguidos, em menos de 1s, por `POST /api/v2/auth/refresh` 200 e novas
+  requisições 200 — confirmado nos 4 bursts do dia, 4 usuários/IPs
+  distintos, sem nenhum caso de refresh falhar ou usuário ficar preso
+  deslogado.
+- **Conclusão**: Incremento 3 estável, sem regressão, critério de "dias
+  de operação normal" do próximo passo (Incremento 4) começou a contar
+  a partir de 21/07/2026.
 
 ## Estado final
 
