@@ -483,8 +483,17 @@ preenche o valor diretamente no arquivo (fora deste chat/doc) antes do teste rea
 do env file pro container — só falta o valor do número e um restart do serviço (ou aguardar o
 próximo start natural) pra pegar a mudança.
 
-### Pendente
+### Teste real — confirmado (22/07/2026)
 
-Teste real dos dois canais juntos aguardando o Vagner preencher o número em
-`/etc/nocrm-extraction.env` — assim que confirmado, disparar `test-alert` de novo e validar
-recebimento no WhatsApp (o e-mail já está validado desde a seção 11).
+Número preenchido pelo Vagner em `/etc/nocrm-extraction.env` (fora deste chat/doc, como
+combinado). `test-alert` disparado de novo: **os dois canais aceitos pela API**
+(e-mail com `id` do Resend; WhatsApp com HTTP 201 e `key` de mensagem da Evolution) — mesma
+linha gravada em `nocrm_extraction_alerts` com o resumo `{email:{ok:true}, whatsapp:{ok:true}}`.
+**Confirmado pelo Vagner**: a mensagem chegou de verdade no WhatsApp, conteúdo íntegro (texto
+completo do alerta, incluindo o passo de recuperação). **Canal WhatsApp validado — os dois
+canais de alerta (e-mail + WhatsApp) estão redundantes e confirmados de ponta a ponta.**
+
+`nocrm-extraction-comments.service` reiniciado pra carregar as variáveis novas
+(`EVOLUTION_*`/`NOCRM_EXTRACTION_ALERT_WHATSAPP`) — progresso da fila não afetado (estado vive
+no Postgres, o restart só recarrega o processo). `nocrm-extraction-attachments.service` já
+nasce com a spec atualizada quando o `OnSuccess=` disparar.
