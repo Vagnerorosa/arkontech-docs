@@ -651,3 +651,104 @@ leads, não 5.
 as duas `systemd unit files` já atualizadas com a reserva e o par dia/noite calibrados. Nada
 retoma sozinho — precisa de `systemctl enable --now nocrm-extraction-comments.service`
 explicitamente autorizado pelo Vagner, começando pelos comentários.
+
+## 15. Retomada autorizada (só comentários) + 3 encaminhamentos (22/07/2026)
+
+Vagner autorizou retomar **só o job de comentários**, após a virada UTC, com o pacing novo.
+Anexos ficam pausados até decisão futura (ETA de 24-60 dias considerado inviável por ora).
+Vai pedir ao suporte do noCRM aumento temporário de limite (10.000/dia por 2-3 semanas) — se
+vier, recalibra tudo de novo.
+
+### Ação: retomado, sem risco de tocar a API antes da virada
+
+`OnSuccess=nocrm-extraction-attachments.service` **removido** de
+`nocrm-extraction-comments.service` — a fila de comentários, quando esvaziar (ETA ~7 dias),
+não vai mais disparar anexos sozinha. `nocrm-extraction-attachments.service` continua
+`disabled`.
+
+`nocrm-extraction-comments.service` **habilitado e iniciado às 14:55 UTC de 22/07/2026** — mas
+sem risco de gastar cota hoje: o próprio orçamento diário do job (calendário UTC, mesma
+virada da conta) já registrava 1.500 usados hoje (do incidente), acima do novo teto de 440 —
+o processo detectou isso na primeira checagem (`orçamento DIÁRIO esgotado (440/dia, reserva
+de 1560 pro app) - aguardando virada UTC`) e foi dormir **sem fazer nenhuma chamada real à
+API**. Retoma sozinho, automaticamente, quando o contador do dia zerar na virada UTC (mesma
+lógica que já existia, sem intervenção manual necessária à meia-noite).
+
+### 15.1 Priorização da fila de anexos por valor (implementado)
+
+Pedido: se o processo precisar ser cortado, o valor deve estar na frente. Nova coluna
+`priority` em `nocrm_extraction_queue` (menor valor = processado primeiro;
+`order by priority asc, next_run_at asc`, índice recriado). Fila de anexos (já semeada, 4.128
+leads) reordenada: **won → todo → standby**, e dentro de cada grupo, `nocrm_lead_id` numérico
+decrescente como proxy de recência (IDs do noCRM são sequenciais por criação — maior ID =
+lead mais recente). `seed` aceita `--priority N` opcional pra uso futuro (ex.: extração
+delta, seção 8 de `fase1b-migracao-base.md`, pode priorizar o que for mais urgente).
+
+### 15.2 Investigação: redundância no worker de refresh por webhook
+
+Pedido: o worker que refaz `GET /leads/{id}` a cada webhook do noCRM tem redundância (mesmo
+lead editado várias vezes em minutos = várias chamadas)? Dá pra agrupar/debounce?
+
+**Como funciona hoje** (`server.js`, `/webhooks/nocrm` + `processNocrmLeadRefreshJobs`):
+cada webhook com `lead_id` faz `INSERT ... ON CONFLICT (lead_id) DO UPDATE SET next_run_at =
+LEAST(next_run_at, now())` em `nocrm_lead_refresh_jobs` (chave única por lead) — múltiplos
+webhooks pro mesmo lead **antes** do worker processá-lo já coalescem numa linha só (não cria
+duplicata). O worker roda a cada 5 min (`NOCRM_WEBHOOK_WORKER_INTERVAL_MS`), processa até 5
+por tick (~60/hora de capacidade se nunca atrasar) e **apaga a linha** ao concluir — não fica
+histórico de quantas vezes um lead foi realmente re-processado no mesmo dia.
+
+**Medido (dado real, 7 dias, `nocrm_webhook_events`)**: pra cada lead com mais de um evento,
+calculado o intervalo entre eventos consecutivos do mesmo lead — **5.833 pares
+consecutivos**, dos quais **3.444 (59%) aconteceram em até 5 minutos** um do outro e **3.548
+(61%) em até 10 minutos**. Ou seja: a maioria das re-edições do mesmo lead acontece em
+rajada rápida (o corretor mexendo em vários campos/comentários numa única sessão de edição).
+
+**Achado**: o design atual já evita duplicata **enquanto o job ainda não foi processado**
+(upsert), mas não garante isso — se o worker pegar o lead **no meio** de uma rajada de
+edição (job criado, processado e apagado, e minutos depois vem outra edição), vira uma
+**segunda** chamada pra API pra praticamente a mesma sessão de trabalho. Quanto mais rápido o
+worker processa (menos atrasado/sem backlog), mais provável isso acontece — o que é um pouco
+contraintuitivo (folga de capacidade ajuda a criar mais chamadas, não menos).
+
+**Proposta de PR pequeno** (não implementado — mudança em `server.js`, produção, fora do
+escopo desta sessão de migração; desenhado pra revisão separada):
+
+```diff
+- `insert into nocrm_lead_refresh_jobs (lead_id, next_run_at, attempts, last_error, updated_at)
+-  values ($1, now(), 0, null, now())
+-  on conflict (lead_id) do update set
+-    next_run_at = least(nocrm_lead_refresh_jobs.next_run_at, now()),
+-    updated_at = now()`,
++ // debounce: cada novo webhook empurra o proximo refresh pra frente (nao mais "o mais cedo
++ // possivel") - uma rajada de edicoes no mesmo lead vira 1 chamada, nao N, garantido em vez
++ // de depender de sorte de timing do worker. NOCRM_REFRESH_DEBOUNCE_MINUTES, default 10.
++ `insert into nocrm_lead_refresh_jobs (lead_id, next_run_at, attempts, last_error, updated_at)
++  values ($1, now() + interval '${DEBOUNCE_MIN} minutes', 0, null, now())
++  on conflict (lead_id) do update set
++    next_run_at = now() + interval '${DEBOUNCE_MIN} minutes',
++    updated_at = now()`,
+```
+
+**Trade-off**: atraso de até `DEBOUNCE_MIN` (proposto 10min) antes de um lead **isolado** (sem
+mais edições) ser refletido no Imoviz — hoje é quase imediato (próximo tick do worker, até
+5min). Aceitável: esse dado alimenta relatório/espelho do CRM, não é UI transacional em tempo
+real. **Benefício esperado**: coalescer rajadas de edição em 1 chamada em vez de possivelmente
+várias — dado o padrão medido (59-61% dos pares em ≤10min), reduziria uma fração real do
+volume de refresh, que hoje é o maior driver de consumo do app (seção 14). Medir o ganho real
+depois de aplicado é simples: comparar `requests_hoje`/dia (relatório diário já existente,
+seção 10) antes/depois do deploy.
+
+**Não implementado nesta sessão** — fica como PR proposto, pendente de decisão/priorização
+separada do Vagner (é código de produção do `casagora_router_api`, não do job de migração).
+
+### 15.3 Reserva deve ser reavaliada periodicamente durante a Fase 1B
+
+Registrado: a reserva de 1.560/dia (seção 14) foi calibrada com o **consumo atual** do app —
+majoritariamente webhooks de edição de lead **dentro do próprio noCRM**. Conforme a equipe da
+Casagora migra pro Imoviz (D11, `DECISOES.md`), menos gente edita lead no noCRM, menos webhook
+dispara, e o consumo real do app deve **cair** ao longo da Fase 1B — não é uma constante.
+**Ação recomendada**: reavaliar `NOCRM_EXTRACTION_APP_RESERVED_DAILY` periodicamente (ex.: a
+cada 2 semanas, ou quando o Dia D dos incrementos de sync se aproximar) usando a mesma
+metodologia da seção 14 (dado real de 30 dias, não suposição) — cada requisição que o app
+deixar de precisar vira orçamento extra pra migração, sem precisar esperar resposta do
+suporte do noCRM.
