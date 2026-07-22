@@ -497,3 +497,80 @@ canais de alerta (e-mail + WhatsApp) estão redundantes e confirmados de ponta a
 (`EVOLUTION_*`/`NOCRM_EXTRACTION_ALERT_WHATSAPP`) — progresso da fila não afetado (estado vive
 no Postgres, o restart só recarrega o processo). `nocrm-extraction-attachments.service` já
 nasce com a spec atualizada quando o `OnSuccess=` disparar.
+
+## 13. Incidente — job derrubou a produção por estourar a cota (22/07/2026)
+
+### O que aconteceu
+
+Às 13:08 UTC o `nocrm-extraction-comments.service` começou a rodar com o orçamento diário de
+1.500 (seção 10). Sem nenhum controle de ritmo **dentro** do dia, ele consumiu **os 1.500 em
+13 minutos** (13:08–13:21 UTC, ~115 req/min — confirmado pelos timestamps de
+`nocrm_extraction_queue`). Isso deixou só ~500 requisições de folga pra todo o resto das ~23h
+do dia — o app principal já vinha usando uma fatia disso desde a meia-noite UTC (sync diário
++ `queue-reconcile` horário), e às **14:05 UTC** (44 minutos depois da rajada) o próprio
+`queue-reconcile` tomou 429 tentando `nocrmSyncUsers`. Às **14:04:48 UTC** um lead manual real
+(Vinícius Ferreira da Silva, captado via corretor/Instagram) também bateu no 429 ao tentar
+criar no noCRM.
+
+Confirmado com uma chamada mínima de teste às 14:13 UTC: a cota da conta **estava mesmo
+zerada**, com reset só às **23:59:59 UTC** do mesmo dia (não é uma janela rolante de 24h — é
+fixo à meia-noite UTC da conta).
+
+### Impacto real (verificado no banco, não estimado)
+
+- **1 lead** caiu no fallback manual (`manual_leads`, id 799, `nocrm_lead_id is null`,
+  `nocrm_error` gravado) — **nenhum dado foi perdido**: o sistema já tinha esse fallback
+  desenhado antes deste job (não construído nesta sessão) — o corretor recebeu a mensagem
+  clara `"Recebido. O noCRM está com limite de API no momento."`, o payload completo ficou
+  salvo pra entrada manual depois, e a Casagora recebeu o alerta de sempre (🚨 WhatsApp,
+  `flushNocrm429Alerts`) com o texto pronto pra copiar/colar no noCRM.
+- Confirmado que os 3 pontos do código que criam lead no noCRM (Facebook Ads, manual-lead
+  atual, manual-lead legado) têm o mesmo fallback — nenhum caminho perde lead silenciosamente,
+  mas **qualquer lead novo que precisasse do noCRM entre 14:05 UTC e a meia-noite ficaria no
+  mesmo fallback manual** enquanto a cota não resetasse.
+- `queue-reconcile` (hourly) ficaria falhando `nocrmSyncUsers` a cada hora até a meia-noite,
+  sem efeito visível pro usuário (é só sincronização de cadastro de corretor, não bloqueia
+  operação).
+
+### Ação imediata
+
+`nocrm-extraction-comments.service` e `nocrm-extraction-attachments.service` parados e
+**desabilitados** (`systemctl stop` + `disable`) assim que o padrão ficou claro — zero consumo
+adicional de cota da minha parte a partir daí. Vagner decidiu contatar o suporte do noCRM
+pedindo aumento/reset (a própria mensagem de erro sugere isso: *"Please contact the support to
+raise your limit"*) — independente da resposta, **a extração não volta hoje**.
+
+### Causa raiz
+
+O orçamento era só **diário** (`NOCRM_EXTRACTION_DAILY_BUDGET=1500`) — nenhum controle de
+ritmo dentro do dia. "Sobrar" no total do dia não protege nada se o job gasta tudo de uma vez
+logo cedo: a reserva teórica de 500/dia pro app não existia de fato às 14h, porque o job já
+tinha queimado a sua parte inteira nos primeiros 13 minutos.
+
+### Correção (`scripts/nocrm-extraction-job.js`, commit `3640b35`)
+
+Dois tetos independentes agora, **o menor sempre vale**:
+
+1. **Reserva diária fixa pro app, calculada ANTES do teto do job** —
+   `NOCRM_EXTRACTION_APP_RESERVED_DAILY` (default **1.000** de um limite de conta de **2.000**,
+   `NOCRM_ACCOUNT_DAILY_LIMIT`). O teto do job passa a ser `conta - reserva` (hoje: **1.000**),
+   não mais um número solto desacoplado do que a conta realmente permite.
+2. **Teto por hora** — `NOCRM_EXTRACTION_HOURLY_BUDGET` (default **40/hora**, nova tabela
+   `nocrm_extraction_hourly_budget`) — o job nunca mais pode rajar, mesmo que sobre orçamento
+   diário. A 40/hora, 24h seguidas dariam 960 — abaixo do teto diário de 1.000, com folga.
+   Ao esgotar a hora, o job dorme até a **próxima hora cheia UTC** (não mais um retry de
+   15min genérico); ao esgotar o dia, dorme até a meia-noite UTC (ou de hora em hora,
+   o que vier primeiro).
+
+`/etc/nocrm-extraction.env` e as duas `systemd unit files` já atualizadas com as variáveis
+novas. Reserva de 1.000/dia pro app é deliberadamente generosa (uso medido do app antes desta
+sessão era ~100-300/dia) — margem grande de propósito pra nunca mais disputar espaço com
+picos de captação de lead.
+
+### Lição
+
+Um job de migração que compartilha `NOCRM_API_KEY` com produção **nunca pode assumir que
+"sobra" no agregado diário é proteção suficiente** — o app precisa de uma fatia **sempre
+disponível a qualquer hora do dia**, não só "em média". Todo job batch que dispute cota com um
+sistema vivo precisa de teto por hora (ou janela menor), não só teto diário — o teto diário
+sozinho é compatível com uma rajada que zera tudo de manhã e deixa o resto do dia desprotegido.
