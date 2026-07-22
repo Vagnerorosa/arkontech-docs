@@ -437,5 +437,54 @@ lança exceção em erro de API (domínio não verificado, chave inválida etc.)
 logado "enviado" incorretamente. Corrigido para checar o campo `error` antes de declarar
 sucesso. Reenviado após o fix: aceito de verdade pelo Resend, `id`
 `d9357d90-e686-4b7a-bae1-1e06096e3263`, para `voliveirarosa@gmail.com`; linha correspondente
-confirmada em `nocrm_extraction_alerts`. Aguardando confirmação de recebimento na caixa de
-entrada.
+confirmada em `nocrm_extraction_alerts`.
+
+**Confirmado pelo Vagner (22/07/2026)**: os dois e-mails de teste chegaram na caixa de entrada
+(não caíram em spam), formato claro, com instruções de recuperação. **Canal de e-mail
+validado, ponta fechada.**
+
+## 12. Segundo canal de alerta — WhatsApp via Evolution API (22/07/2026)
+
+Pedido do Vagner: canais redundantes (e-mail permanece; WhatsApp se soma, não substitui),
+reaproveitando a instância Evolution que já roda na VPS (projeto `agenciadeia`).
+
+### Descoberta da instância
+
+`GET /instance/fetchInstances` na Evolution API (mesma usada pelo `casagora_router_api` pra
+disparo de leads) — **uma única instância**, `"Sistema Casagora"`, estado `open` (conectada).
+Sem ambiguidade, nada pra escolher — a mesma instância que o app principal já usa pra falar com
+os corretores.
+
+### Implementação
+
+`raiseAlert()` agora dispara os dois canais **em paralelo** via `Promise.allSettled` — uma
+exceção ou falha num canal não impede o outro nem derruba o processo (nenhum dos dois `await`
+consecutivos que existiam antes; agora são duas promises independentes, cada uma com seu
+próprio try/catch interno). O resumo de quem funcionou/falhou (`{email: {ok, info}, whatsapp:
+{ok, info}}`) vai junto no `detail` gravado em `nocrm_extraction_alerts`.
+
+WhatsApp usa o mesmo endpoint que o app principal já usa (`POST /message/sendText/{instance}`,
+header `apikey`) — implementação própria no script (standalone, não importa de `server.js`
+por causa da IIFE, ver `project_whatsapp_fix` nas notas do projeto). **Mesma cautela do bug do
+Resend, aplicada de propósito**: não basta checar se a chamada não lançou exceção — a Evolution
+pode responder `200` com corpo de erro estrutural, ou HTTP 4xx/5xx; o código checa os dois
+(`!resp.ok || body.error`) antes de declarar sucesso.
+
+### Número de destino — só em variável de ambiente
+
+**Nunca no código nem neste documento.** Variável nova: `NOCRM_EXTRACTION_ALERT_WHATSAPP`
+(dígitos apenas, com DDI — ex.: formato `55DDNNNNNNNNN`), lida de
+`/etc/nocrm-extraction.env` (mesmo arquivo `600` que já guarda `NOCRM_EXTRACTION_ALERT_EMAIL`
+e as demais credenciais reaproveitadas). Linha já criada nesse arquivo, **vazia** — o Vagner
+preenche o valor diretamente no arquivo (fora deste chat/doc) antes do teste real. As duas
+`systemd unit files` (`nocrm-extraction-comments.service`,
+`nocrm-extraction-attachments.service`) já foram atualizadas pra repassar
+`EVOLUTION_BASE_URL`/`EVOLUTION_API_KEY`/`EVOLUTION_INSTANCE`/`NOCRM_EXTRACTION_ALERT_WHATSAPP`
+do env file pro container — só falta o valor do número e um restart do serviço (ou aguardar o
+próximo start natural) pra pegar a mudança.
+
+### Pendente
+
+Teste real dos dois canais juntos aguardando o Vagner preencher o número em
+`/etc/nocrm-extraction.env` — assim que confirmado, disparar `test-alert` de novo e validar
+recebimento no WhatsApp (o e-mail já está validado desde a seção 11).
