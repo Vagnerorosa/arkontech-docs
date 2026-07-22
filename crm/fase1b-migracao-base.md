@@ -428,6 +428,14 @@ a equipe comercial pedir reabordagem de cancelados recentes especificamente.
    de um comando novo (`reset` ou equivalente) que volte itens `done` pra `pending` pros leads
    do corte, em vez de reusar `seed` como está. Registrado aqui como pré-requisito técnico do
    Dia D, não construído nesta sessão.
+
+   **Reforço (22/07/2026, recalibração do limite temporário — `fase1b-job-api.md` seção 16.9):
+   este item é OBRIGATÓRIO, não opcional.** Comentários e anexos continuam sendo criados pelos
+   corretores agora mesmo, em leads que este job já extraiu — quanto mais tempo entre o fim da
+   extração inicial e o Dia D, maior a defasagem. O Dia D **não pode virar** sem essa extração
+   delta ter rodado e sido validada (ver item 3 abaixo), e o comando de `reset`/re-seed segue
+   como bloqueador técnico concreto a construir antes de agendar o Dia D — não é um "nice to
+   have" de uma sessão futura.
 3. **Dia D — noCRM vira somente-leitura**: quando a base completa (seção 5-6) estiver
    migrada e validada (amostra conferida por alguém da Casagora) **e a extração delta (item 2)
    tiver rodado e validado**, desligar a capacidade de criar/editar no noCRM (ou só combinar

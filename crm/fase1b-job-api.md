@@ -652,6 +652,117 @@ as duas `systemd unit files` já atualizadas com a reserva e o par dia/noite cal
 retoma sozinho — precisa de `systemctl enable --now nocrm-extraction-comments.service`
 explicitamente autorizado pelo Vagner, começando pelos comentários.
 
+## 16. Limite temporário de 10.000/dia (suporte noCRM) + proteção por cota real (22/07/2026)
+
+O suporte do noCRM **aumentou o limite para 10.000 requisições/dia por 2 semanas**, confirmado
+no painel da conta. **Prazo: até ~2026-08-05.** Depois disso o limite volta a 2.000/dia — o
+job **não pode assumir sozinho** que o valor elevado continua válido além dessa data (ver
+"Proteção de prazo" abaixo).
+
+### 16.1 Recalibração do orçamento
+
+A reserva do app (`APP_RESERVED_DAILY = 1.560`, seção 14) **não muda** — ela protege o
+consumo real do app, que não depende de quanto a conta permite no total. O que muda é o teto
+do job: `10.000 − 1.560 = 8.440/dia` (era 440/dia).
+
+Teto por hora recalibrado na mesma proporção dia:noite (1:8) da calibração original (seção
+14), escalado pro novo orçamento:
+
+| | Antes (limite 2k) | Agora (limite 10k, temporário) |
+|---|---|---|
+| Teto do job (dia) | 440/dia | **8.440/dia** |
+| Teto por hora — diurno | 10/hora | **160/hora** |
+| Teto por hora — noturno (06h-10h UTC) | 80/hora | **1.280/hora** |
+
+### 16.2 Achado: teto por hora sozinho não bastava mais — pacing intra-hora
+
+Com tetos por hora desta ordem de grandeza, o mecanismo antigo (buscar até `--limit` linhas do
+banco por tick, processar todas de uma vez, dormir só entre ticks) permitiria queimar o teto
+da hora inteira em poucos minutos e ficar ocioso o resto da hora — **o mesmo padrão do
+incidente de 22/07 (seção 13), só que dentro de 1h em vez do dia inteiro**, e ainda violaria
+o princípio "nunca concentrar tudo em minutos". Corrigido: nova função
+`interRequestDelayMs()` espaça cada requisição real dentro do lote (`3.600.000 / teto por
+hora` ms, mínimo 500ms) — a 160/hora isso dá ~22,5s entre chamadas; a 1.280/hora, ~2,8s.
+Confirmado ao vivo pós-deploy: leads processando a cada ~24s no regime diurno, sem rajada.
+
+### 16.3 Proteção nova: cota REAL da conta via header (não só o contador interno do job)
+
+Pedido do Vagner: os corretores trabalham em tempo real, e um dia atipicamente movimentado
+(que a média de 30 dias, seção 14, não prevê) pode fazer o app consumir mais do que a reserva
+calculada — o contador interno do job (que só sabe o que ELE mesmo gastou) não enxerga isso.
+
+Verificado ao vivo (`curl` de teste, 22/07/2026 ~18h57 UTC): a API do noCRM retorna o header
+**`api-requests-left`** em toda resposta (200 e 429), com a cota real restante da conta
+inteira — não é uma estimativa, é o número que a própria API está usando pra decidir o 429.
+
+Implementado: `nocrmGet()` lê esse header a cada chamada e grava o valor (memória + tabela
+`nocrm_extraction_account_quota`, singleton, sobrevive a restart do processo). Antes de cada
+item e a cada início de lote, o job checa: se a cota real da conta ≤ reserva do app (1.560),
+**para sozinho** (`exhausted: 'account_reserve'`, mesmo tratamento do teto diário — dorme e
+tenta de novo até a virada UTC), **independente do que o contador próprio do job diga**.
+Dispara alerta (dual-channel, dedup 1x/dia) avisando que foi um dia atípico do app.
+
+### 16.4 429 real agora é parada dura, não pausa-e-retoma
+
+Antes: um 429 real pausava a corrida (`sleep(retryAfter)`) e tentava de novo sozinho no mesmo
+dia. Pedido do Vagner: **isso significa que a proteção inteira falhou** (reserva + pacing por
+hora + cota real, as três, teriam que falhar ao mesmo tempo pra um 429 acontecer de verdade) —
+não é "esperar passar", é sinal de bug ou premissa errada que precisa de olho humano antes de
+voltar a gastar cota. Mudado: 429 real agora **para o processo imediatamente** (não espera o
+`API-RETRY-AFTER`), dispara alerta dual-channel, e sai com **exit 42** — mesmo tratamento do
+circuit breaker (`RestartPreventExitStatus=42`, `systemd` não reinicia sozinho).
+
+### 16.5 Proteção de prazo — o limite de 10k não pode sobreviver ao próprio prazo
+
+`NOCRM_ACCOUNT_LIMIT_EXPIRES_AT=2026-08-05` (novo, `/etc/nocrm-extraction.env`). O job checa
+essa data a cada tick (comparação de string `YYYY-MM-DD`, UTC): passado o prazo, o `NOCRM_
+ACCOUNT_DAILY_LIMIT` configurado (10.000) é **ignorado automaticamente** — o cálculo do
+orçamento diário cai pro `NOCRM_ACCOUNT_DAILY_LIMIT_FALLBACK` (2.000, default) mesmo que
+ninguém tenha limpado a variável no arquivo ainda. Dispara alerta (dedup 1x/dia) avisando da
+queda pro fallback, pra caso o Vagner precise pedir renovação ao suporte ou só confirmar que
+o valor antigo está certo de novo.
+
+### 16.6 `OnSuccess=` reativado — anexos encadeiam sozinhos de novo
+
+Removido em 22/07 (seção 15) enquanto o ETA de anexos era inviável (24-60 dias) e a fila não
+tinha prioridade. Com o limite temporário (ETA de dias, não semanas, seção 16.7) e a fila já
+priorizada won→todo→standby (seção 15.1), `OnSuccess=nocrm-extraction-attachments.service`
+voltou pro unit de comentários — quando a fila de comentários esvaziar (saída limpa, não
+breaker/429), o `systemd` dispara anexos sozinho, sem intervenção manual.
+
+### 16.7 Marcos de progresso — alerta em sucesso, não só em falha
+
+Os alertas existentes (breaker, 429, proteção de reserva/prazo) só cobrem falha — nada avisava
+quando a extração progredia normalmente. Adicionado (dedup permanente, um por vida da
+migração): alerta quando a fila de comentários esvazia de verdade (junto avisa que anexos vão
+disparar via `OnSuccess`) e quando o processo de anexos roda pela primeira vez. Os dois usam o
+mesmo canal dual (e-mail + WhatsApp) dos alertas de proteção.
+
+### 16.8 ETA recalculado (22/07/2026, ~19h UTC, com os números desta seção)
+
+| Fase | Pendente | Requisições/lead | Total | Nova taxa | ETA projetado |
+|---|---|---|---|---|---|
+| **Comentários** | 2.660 (de 4.128) | 1 | 2.660 | ~160-1.280/hora (paceado) | **~23/07, ~06h45 UTC** (03h45 Brasília) — amanhã de manhã |
+| **Anexos** — conservador (~2,5 req/lead) | 4.123 | ~2,5 | ~10.308 | idem, a partir do fim dos comentários | **~24/07, meio da manhã UTC** — ~1,5 dia após início |
+| **Anexos** — observado (amostra de 5, seção 6, viesada pra `won`) | 4.123 | ~6,4 | ~26.387 | idem | **~26/07, manhã UTC** — ~3,5 dias após início |
+
+Ambos os cenários de anexos terminam com **folga grande** (8-9 dias) antes do prazo do limite
+elevado (05/08). Mesmo tratamento de antes: reportar a taxa real observada assim que a fase de
+anexos começar (relatório diário, seção 10) e recalcular nesse ponto com dado de milhares de
+leads, não 5 — os números acima são projeção, não medição.
+
+### 16.9 Reforço: extração DELTA continua obrigatória antes do Dia D
+
+Nada nesta recalibração substitui a extração delta já registrada em
+`fase1b-migracao-base.md` seção 7, item 2 — pelo contrário, o achado do Vagner que motivou
+essa recalibração (corretores trabalham os leads em tempo real) é o mesmo motivo pelo qual o
+delta é **obrigatório**, não opcional: comentários e anexos continuam sendo criados agora
+mesmo em leads já extraídos por este job. Rodar só a extração inicial e nunca mais tocar nela
+deixaria o Imoviz permanentemente defasado do noCRM entre o fim desta corrida e o Dia D. O
+comando de re-seed (`done` → `pending` pros leads do corte, pra forçar reprocessamento) segue
+**não construído** — pré-requisito técnico do Dia D, registrado como gap conhecido em
+`fase1b-migracao-base.md` seção 7.
+
 ## 15. Retomada autorizada (só comentários) + 3 encaminhamentos (22/07/2026)
 
 Vagner autorizou retomar **só o job de comentários**, após a virada UTC, com o pacing novo.
