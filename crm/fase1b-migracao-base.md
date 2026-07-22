@@ -436,6 +436,75 @@ a equipe comercial pedir reabordagem de cancelados recentes especificamente.
    delta ter rodado e sido validada (ver item 3 abaixo), e o comando de `reset`/re-seed segue
    como bloqueador técnico concreto a construir antes de agendar o Dia D — não é um "nice to
    have" de uma sessão futura.
+
+   ### 2.1 Delta "esperto", não "burro" — a API filtra por data de atualização (22/07/2026,
+   verificado ao vivo)
+
+   Pergunta do Vagner: reprocessar os 4.128 leads inteiros todo dia pra pegar quem mudou custa
+   ~4.128 requisições (impraticável a 440/dia, o teto que volta em 05/08 — nem cabe num dia
+   inteiro). Verificado direto na API (não só na doc): `GET /leads` aceita `updated_after`
+   (alternativa: `start_date`/`end_date` com `date_range_type=update`) combinado com
+   `status=todo,standby,won` — e o header `x-total-count` dá a contagem exata **numa única
+   requisição** (`limit=1`, sem precisar paginar tudo). Testado ao vivo:
+
+   | Dia (UTC) | Leads do corte (todo/standby/won) atualizados |
+   |---|---|
+   | 21/07 | 260 |
+   | 20/07 | 97 |
+   | 19/07 | 11 |
+   | 18/07 | 33 |
+   | 17/07 | 81 |
+   | 16/07 | 46 |
+   | 15/07 | 42 |
+
+   Média ≈81/dia, mediana ≈46/dia, variância real alta (11-260 numa semana, e um dia em
+   andamento chegou a 597 parcial) — amostra pequena (7 dias), não tem o mesmo rigor da
+   calibração de 30 dias da seção 14 de `fase1b-job-api.md`; recomendo repetir essa mesma
+   consulta diariamente por 30 dias antes de fixar um orçamento definitivo pro delta contínuo
+   (seção 2.2). Mas a ordem de grandeza já é decisiva: **1-2 requisições pra listar + N leads
+   realmente mudados** (tipicamente dezenas, não milhares) é uma fração pequena de 4.128 —
+   viável até no teto de 440/dia pós-05/08, com folga.
+
+   `updated_after` também resolve de graça o caso "lead novo entrou no corte" (lead criado
+   aparece com `updated_at = created_at`, cai dentro do filtro automaticamente) — só falta
+   tratar separadamente quem **saiu** do corte (`status` virou `cancelled`/`lost`), que não
+   aparece mais no filtro `status=todo,standby,won` (checagem à parte, mais barata: contar
+   `status=cancelled,lost&updated_after=<checkpoint>` e comparar contra os IDs já na fila).
+
+   ### 2.2 Desenho do job de delta contínuo (projetado, não implementado nesta sessão)
+
+   Diferente dos jobs de comentários/anexos (processos de vida curta, terminam quando a fila
+   esvazia), o delta é **permanente** — roda todo dia, do fim da extração em massa até o Dia D,
+   e continua depois (rede de segurança, item 4). Desenho:
+
+   - **Checkpoint, não full-scan**: nova tabela `nocrm_extraction_delta_state` (singleton,
+     `last_checkpoint timestamptz`). Cada corrida: `GET /leads?updated_after=<checkpoint>&
+     status=todo,standby,won&limit=100` (paginado por `offset` só se `x-total-count` > 100,
+     raro pelo dado acima) → lista de `nocrm_lead_id` mudados desde a última corrida.
+   - **Requeue, não seed simples**: pro comando novo (`reset`/`requeue`, mesmo gap da seção 2),
+     UPSERT que muda status **de volta pra `pending`** quando já existir como `done` (`on
+     conflict (nocrm_lead_id, task_type) do update set status='pending', next_run_at=now()
+     where nocrm_extraction_queue.status='done'`) — sem duplicar linha, sem mexer em item que
+     já esteja em erro/retry por outro motivo.
+   - **Comentários E anexos**: cada lead mudado entra na fila dos dois tipos — comentário novo
+     é óbvio, mas anexo novo também pode ter sido anexado sem necessariamente mudar `status`
+     tarde o bastante pra cair fora da janela (o `attachments` já é idempotente por anexo
+     individual, então re-rodar a lista de um lead sem anexo novo custa 1 requisição barata e
+     não baixa nada de novo).
+   - **Checkpoint avança pro horário de INÍCIO da corrida** (não o fim) — qualquer mudança que
+     aconteça durante a corrida em si ainda vai aparecer na próxima consulta (`updated_after`
+     inclusivo), custo é no máximo reprocessar 0-poucos leads de fronteira, nunca perder um.
+   - **Reaproveita 100% do orçamento/proteções já existentes** (reserva, teto por hora, pacing
+     intra-hora, cota real via header, 429 vira parada dura) — é o mesmo script, mesmas tabelas
+     de orçamento, só uma fonte de trabalho diferente (consulta à API em vez de lista estática
+     do `seed`).
+   - **Agendamento**: `systemd timer` diário (não serviço de vida longa como comments/
+     attachments), de preferência na janela 06h-10h UTC (uso baixo do app, mesma calibração da
+     seção 14) — custo estimado (seção 2.1) cabe tranquilo mesmo no teto pós-05/08.
+
+   **Não implementado nesta sessão** — desenho completo o bastante pra construir quando
+   aprovado; pendente de decisão do Vagner sobre prioridade (compete por atenção com o script
+   de import, seção 8).
 3. **Dia D — noCRM vira somente-leitura**: quando a base completa (seção 5-6) estiver
    migrada e validada (amostra conferida por alguém da Casagora) **e a extração delta (item 2)
    tiver rodado e validado**, desligar a capacidade de criar/editar no noCRM (ou só combinar
@@ -450,7 +519,29 @@ a equipe comercial pedir reabordagem de cancelados recentes especificamente.
    "precisei olhar algo que só existia lá". Decisão final e prazo exato ficam com o Vagner
    (pergunta 3 do `fase1-nocrm-plano.md`, ainda em aberto).
 
-## 8. Proposta de desenho do script de import (21/07/2026, revisado com D14-D16) — PARA APROVAÇÃO, NÃO CODAR AINDA
+### 7.1 Proposta de data do Dia D (22/07/2026) — PARA O VAGNER APROVAR, NÃO É DECISÃO TOMADA
+
+Juntando os ETAs reais (`fase1b-job-api.md` seção 16.8) com as etapas restantes do item 7
+acima, uma cronologia proposta:
+
+| Etapa | Duração estimada | Data aproximada | Confiança |
+|---|---|---|---|
+| Extração em massa (comentários + anexos) | já em andamento | conclui **~26/07** (cenário observado, mais conservador que o ~24/07 otimista) | **Alta** — medido, não estimado (seção 16.8) |
+| Construir comando `reset`/requeue + subir o delta contínuo (seção 2.2) rodando | ~1-2 dias | ~27-28/07 | Média — escopo pequeno e já desenhado |
+| Construir e testar o script de import (seção 8, ainda não escrito) | ~5-7 dias úteis | ~04-06/08 | **Baixa — maior incerteza de toda a cronologia**, é trabalho novo sem estimativa própria ainda; primeira coisa a refazer quando o import for de fato escopado |
+| Validação por amostra (alguém da Casagora confere o dado migrado) | ~2 dias | ~06-08/08 | Média |
+| Delta final + corte (Dia D em si) | ~1 dia | ~08-09/08 | Média (depende do delta contínuo já estar rodando há dias, não ser a primeira vez) |
+
+**Proposta: Dia D entre 11/08 e 15/08/2026** (folga de alguns dias sobre a soma otimista, pra
+absorver o imprevisto mais provável — o script de import, que é o único item sem histórico de
+velocidade real neste projeto). Note que isso é **depois** do prazo do limite temporário
+(05/08) — sem problema, porque a extração em massa (que precisa do limite alto) termina bem
+antes (~26/07); o que roda entre 05/08 e o Dia D é só o delta contínuo, que cabe folgado no
+teto de 440/dia revertido (seção 2.1).
+
+**O que preciso pra confirmar/refinar esta data**: escopo real do script de import (item ainda
+"para aprovação, não codar" na seção 8) — assim que isso for decidido e dimensionado, a linha
+mais incerta da tabela vira uma estimativa de verdade em vez de um chute educado.
 
 > Levantamento do schema atual (`casagora_router` produção, só leitura) + leitura do código de
 > criação de deal existente (`src/server.js`) + export CSV de 21/07 (colunas `Pipeline`/`Step`)
