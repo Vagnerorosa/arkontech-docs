@@ -424,3 +424,103 @@ role `arkontech`, 4 consumidores) rotacionados e validados em produção.
 Token do Carhauler (crontab) permanece o mesmo, adiado por decisão
 consciente. `segredos-relatorio.md` atualizado para refletir o novo
 status.
+
+### 22/07/2026 — varredura de resíduos, achados que a lista original não pegou
+
+Motivada por um teste não relacionado (job de extração noCRM) que falhou
+com `password authentication failed` ao usar `/etc/casagora-router.env`
+— sinal de que a lista de "4 consumidores" de 19/07 estava incompleta.
+Vagner pediu varredura completa antes de corrigir só o arquivo que
+quebrou.
+
+**Método usado** (diferente do original — ver lição abaixo): em vez de
+procurar só por referências ao hostname `arkontech_postgres` (o que o
+runbook original fazia, seção "Consumidores"), buscar a **string literal
+da senha antiga** (`grep -rlF`) em: `/etc` inteiro, `/root` (excluindo
+repos git e caches), crontabs (`/etc/cron.d`, `/etc/crontab`,
+`/var/spool/cron`, `crontab -l`), unit files do systemd, e a spec de
+**todos** os serviços Swarm (`docker service ls` + `inspect` de cada um,
+não só dos 4 já conhecidos).
+
+**Achados novos** (nenhum destes estava na lista de 19/07):
+
+1. **`/etc/casagora-router.env`** (`DATABASE_URL`) — o que quebrou o
+   teste. Corrigido, validado (diff contra backup mostra só a senha
+   mudando).
+2. **`/etc/arkontech/.env`** (`POSTGRES_PASSWORD`, `POSTGRES_DB`,
+   `POSTGRES_USER`, `JWT_SECRET`) — arquivo órfão (nada no host/repos
+   referencia esse caminho), datado de 29/01, provavelmente resíduo do
+   setup inicial do `arkontech_api`. Corrigido do mesmo jeito, mesmo sem
+   uso ativo confirmado — mais barato corrigir do que confiar que
+   "ninguém lê isso".
+3. **4 scripts avulsos em `/root/scripts/`** (`reprocess_batch.mjs`,
+   `reprocess_lead.mjs`, `reprocess_unrouted_batch_20260524.mjs`,
+   `recover_leads_2026_05_13.mjs`) — scripts de recuperação pontual de
+   leads (incidentes de maio/2026), com a senha antiga **hardcoded**
+   como fallback de `DATABASE_URL`. Não rodam via cron/systemd (não
+   encontrados em nenhum agendador), mas ficaram no disco prontos pra
+   serem reexecutados manualmente num incidente futuro — se alguém
+   reusasse um desses scripts sem notar o fallback hardcoded, teria uma
+   falha de auth confusa. Corrigidos (senha antiga → nova), só a senha
+   mudou (diff conferido).
+4. **A própria spec do serviço Swarm `arkontech_postgres`** — env
+   `POSTGRES_PASSWORD` (bootstrap do container oficial do Postgres)
+   ainda com a senha antiga. **Não é risco operacional agora** (o
+   Postgres já roda com a senha nova aplicada via `ALTER USER` em
+   19/07; a env var de bootstrap só é lida pelo `docker-entrypoint.sh`
+   oficial na criação de um data directory **vazio** — com o volume já
+   populado, essa env var fica sem efeito nenhum na operação do dia a
+   dia). É um risco de **disaster recovery**: se o volume nomeado for
+   perdido/recriado algum dia, o container reinicializaria o cluster do
+   zero usando essa env var — ou seja, com a senha errada, quebrando os
+   4 consumidores de uma vez justo no meio de uma recuperação de
+   desastre, o pior momento possível para descobrir isso.
+
+**Pendente, decisão consciente do Vagner (22/07/2026)**: corrigir essa
+env exige `docker service update`, que reinicia o container do Postgres
+(Swarm não tem outro mecanismo para aplicar mudança de spec). Investigado
+antes de decidir:
+- Os 5 serviços envolvidos (`casagora_router_api`, `arkontech_api`,
+  `carhauler_app`, `carhauler_app_canary`, `arkontech_postgres`) têm
+  `RestartPolicy: {Condition: "any", MaxAttempts: 0}` — Swarm reinicia
+  sozinho qualquer um que caia, tentativas ilimitadas, ~5s de delay.
+  Achado colateral: `casagora_router_api` **não tem** `pool.on('error',
+  ...)` registrado no `server.js` — uma conexão ociosa que quebrar
+  durante o restart do Postgres pode derrubar o processo por exceção
+  não tratada, em vez de reconectar graciosamente. O Swarm cobre esse
+  buraco (restart automático), mas é o processo caindo e voltando, não
+  reconexão limpa — **registrado como pendência nova no `DECISOES.md`**,
+  candidato a PR pequeno numa fase futura.
+- Backup manual rodado a pedido antes de decidir: dump de 88MB,
+  upload no R2 confirmado (`casagora_router_2026-07-22_122649.sql.gz`),
+  sucesso na 2ª tentativa (o 501 transitório de sempre, não é falha).
+- **Decisão**: adiar o `docker service update` no `arkontech_postgres`
+  para a próxima janela de baixo uso (madrugada/fim de semana, mesmo
+  padrão da execução original de 19/07) — o gap é só de disaster
+  recovery futuro, não risco ativo, e a equipe estava usando o sistema
+  no momento do pedido. Procedimento pronto pra quando a janela abrir:
+  ```bash
+  docker service update --env-add "POSTGRES_PASSWORD=<senha_atual_do_role_arkontech>" arkontech_postgres
+  docker service ps arkontech_postgres --no-trunc | head -5   # confirmar saudável
+  # validar os 4 apps voltaram sozinhos (Swarm restart automático):
+  for s in casagora_router_api arkontech_api carhauler_app carhauler_app_canary; do
+    docker service ps "$s" --no-trunc | head -3
+  done
+  ```
+
+**Lição para a próxima rotação/varredura**: procurar só por quem
+**referencia o hostname/serviço** (`grep -i arkontech_postgres` nos envs
+dos serviços Swarm, o método original) encontra os consumidores "óbvios"
+mas tem dois pontos cegos que este achado expôs: (1) não olha pra fora do
+Swarm — arquivos soltos no host (`/etc/*.env`, scripts em `/root`,
+crontabs) nunca aparecem nesse grep porque não têm a palavra
+"arkontech_postgres" neles, só a connection string com a senha; (2) não
+considera que **o próprio serviço do banco** carrega a senha como
+bootstrap, não como "consumo" — fica fora de qualquer busca por "quem
+consome". A busca correta, replicável: depois de definir a senha nova,
+**grep pela string literal da senha antiga** (não pelo nome do host) em
+`/etc` inteiro, `/root`, crontabs, unit files do systemd, e a spec de
+**todos** os serviços Swarm (`docker service ls`, não uma lista
+pré-definida) — é mais barato rodar essa varredura ampla uma vez do que
+confiar numa lista de consumidores levantada por raciocínio ("quem eu
+acho que usa isso") em vez de busca exaustiva.

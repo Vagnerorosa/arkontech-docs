@@ -41,6 +41,29 @@ geral. Hardening interino a avaliar (nenhum implementado ainda):
   viável — o P4 garante que `req.ip` é confiável).
 Sem prazo definido — decisão do Vagner.
 
+### P7 — `casagora_router_api` sem `pool.on('error', ...)` no client do Postgres
+Achado em 22/07/2026, durante a varredura de resíduos da rotação de
+credenciais (`crm/rotacao-credenciais.md`, seção "22/07/2026"). O `pool`
+do `pg` em `src/server.js` (`new Pool({ connectionString: DATABASE_URL
+})`, linha ~297) não registra um handler de `error` — pela documentação
+do `node-postgres`, um client ocioso que perde a conexão (ex.: o
+Postgres reinicia) emite `error` no pool em vez de só falhar a query em
+andamento; sem listener, esse evento vira exceção não tratada e derruba
+o processo Node inteiro. Não achado por acidente de produção: veio à
+tona ao planejar um `docker service update` no `arkontech_postgres`
+(ainda não executado, ver runbook) e perceber que o processo cairia
+numa reconexão em vez de se recuperar sozinho.
+**Mitigação hoje**: o Swarm tem `RestartPolicy: {Condition: "any",
+MaxAttempts: 0}` no serviço — se o processo cair, volta em ~5s sozinho.
+Cobre o sintoma (indisponibilidade breve, autolimitada), não a causa.
+**Não verificado** se `arkontech_api`/`carhauler_app`/
+`carhauler_app_canary` têm o mesmo padrão (código não está clonado
+neste ambiente) — mesma varredura vale a pena nesses repos.
+Correção é pequena (registrar `pool.on('error', err => console.error(...))`
+logo após `new Pool(...)`) — candidato a PR de robustez, sem prazo,
+possivelmente junto da Fase 2/4 (`ROADMAP.md`) ou isolado como hardening
+pontual. Nenhuma mudança de código feita ainda.
+
 ## ✅ Tomadas
 
 ### D1 — Sistema de disparos nasce FORA do CRM (18/07/2026)
