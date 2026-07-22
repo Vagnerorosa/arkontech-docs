@@ -284,10 +284,100 @@ reprocessados, sem custo adicional.
    download existente (branch por `storage_backend`) — não feita agora, ver seção 4.
 3. **`/etc/casagora-router.env` desatualizado** (seção 2) — recomendado corrigir, não fiz.
 
-## 8. Próximo passo
+## 8. Reconciliação do corte real — divergência encontrada e corrigida (22/07/2026)
 
-Escopo desta sessão terminou no teste de 5 leads. **Nenhuma corrida em volume foi iniciada** —
-aguardando autorização explícita para:
-(a) montar a lista real dos 3.615 leads truncados (D14) e dos 5.750 do corte (seção 6 de
-`fase1b-migracao-base.md`) e semeá-la na fila;
-(b) criar e habilitar o `systemd service` pra rodar a corrida de dias sem supervisão manual.
+Ao montar a lista real de IDs pra semear a fila (D12/seção 6 de `fase1b-migracao-base.md`
+falava em **5.730-5.763 leads**, won+todo+standby), recontei diretamente os 3 arquivos do
+export de 21/07 (`/root/nocrm-export/nocrm-leads-2026-07-21-*.csv`, os mesmos que embasaram
+o D12) com um parser real (`xlsx`, respeitando campos com quebra de linha — `wc -l` não serve
+nesse CSV, ele conta ~409k linhas para 145.719 registros reais por causa de comentários
+multi-linha dentro de células).
+
+**Validação cruzada, bate exato com o doc**: `won` = **1.582** (doc: "1.582") e, dentro dos
+`won`, `Step` = "09 - Assinado" em **1.419** e "08 - Proposta Tirada" em **129** — os dois
+números citados literalmente na seção 8.1.1 do plano de migração. Confirma que a coluna
+`Status`/`Step` identificada é a certa.
+
+**Divergência real**: `todo` = **2.186** e `standby` = **360** (recontagem direta, reproduzível
+agora) — bem diferente do `todo` 1.601-1.631 / `standby` 2.518-2.580 do documento. Corte real
+verificado: **4.128 leads** (won 1.582 + todo 2.186 + standby 360), não 5.730-5.763. Não foi
+possível reconstruir com confiança, no tempo desta sessão, **qual** metodologia gerou os
+números antigos de todo/standby (provavelmente um snapshot ou critério diferente) — mas como
+`won` e o cruzamento com `Step` batem exatamente, a contagem `Status` atual está correta contra
+a fonte primária (os próprios arquivos do export). **Ação**: segui com os 4.128 verificados,
+sem tentar restaurar os 5.730-5.763 não reproduzíveis. Recomendo o Vagner revisar essa
+divergência quando houver tempo — não bloqueia a extração (ela só fica mais restrita, nunca
+processa lead a menos que devesse).
+
+Pelo mesmo motivo (risco de reconstruir errado uma metodologia que não bate mais), **não tentei
+isolar os "3.615 truncados"** (D14) dentro desse corte — uma tentativa de replicar o critério
+"≥4 comentários visíveis" bateu em **2.988** dos 4.128, mas essa contagem herda a mesma
+incerteza de metodologia. Decisão: **semear comentários para os 4.128 leads inteiros do corte**
+(não só o subconjunto truncado) — mais simples, sem risco de reconstrução, custo extra pequeno
+(~1.140 requisições a mais, menos de 1 dia extra no orçamento de 1.500/dia).
+
+## 9. ETA recalculado (22/07/2026, com dado verificado + achado de que download não conta na cota)
+
+Esclarecimento primeiro: "o download de anexos não conta na cota" (a busca real do binário via
+URL assinada do S3, seção 1) **já estava implicitamente fora** da estimativa original do
+`fase1b-migracao-base.md` — o "1 lista + 1-2 downloads" da seção 5 sempre quis dizer "1 lista +
+1-2 chamadas de `retrieve-one`" (que geram a URL e **essas sim** contam), não o fetch do S3 em
+si. Esse achado **confirma** a metodologia antiga, não muda os números por si só — o que muda
+o ETA é o corte real (4.128, não 5.730) e ter uma amostra real medida (seção 6) em vez de só
+uma estimativa.
+
+| Fase | Leads | Requisições/lead | Total requisições | A 1.500/dia |
+|---|---|---|---|---|
+| **Comentários** (todos os 4.128, não só truncados) | 4.128 | 1 (fixo, sem paginação) | 4.128 | **3 dias** |
+| **Anexos** — cenário conservador (estimativa original da seção 5) | 4.128 | ~2,5 | ~10.320 | **~7 dias** |
+| **Anexos** — cenário observado (amostra real de 5 leads `won`, seção 6) | 4.128 | ~6,4 | ~26.400 | **~18 dias** |
+
+A amostra de 5 leads é pequena e só cobriu `won` (que tende a ter mais documentos por ser
+negócio fechado) — o número real só fica claro com volume de verdade. Tratamento: reportar a
+taxa real observada no relatório diário (seção 10) assim que a fase de anexos come çar
+(depois que comentários esvaziar, ~3 dias) e recalcular o ETA nesse ponto com dado real de
+milhares de leads, não 5.
+
+## 10. GO-AHEAD executado (22/07/2026)
+
+Autorizado pelo Vagner após: (a) resíduo da rotação de credenciais fechado em todos os
+consumidores exceto a spec do `arkontech_postgres` (adiada pra janela de baixo uso, ver
+`rotacao-credenciais.md`); (b) ETA recalculado (seção 9); (c) condições de operação autônoma
+definidas — relatório diário consultável + circuit breaker de taxa de erro. Sem necessidade de
+novo ok entre comentários e anexos, encadeado via `systemd`.
+
+### Adições ao job antes de rodar em volume
+
+- **Relatório diário** (`nocrm_extraction_daily_report`, `day, task_type, pending, done, error,
+  requests_used`): atualizado a cada virada de dia (e ao esgotar orçamento/esvaziar fila) — uma
+  linha por dia por tipo, consultável via SQL direta ou `node scripts/nocrm-extraction-job.js
+  status` (mostra o dia corrente; histórico fica na tabela).
+- **Circuit breaker**: para sozinho se a taxa de erro passar de 30% numa janela dos últimos 20
+  processados (com mínimo de 10 antes de julgar) OU 5 falhas seguidas. Ao disparar: grava em
+  `nocrm_extraction_alerts`, manda e-mail via Resend (mesmo `RESEND_API_KEY`/`RESEND_FROM_EMAIL`
+  que o app já usa) pra `NOCRM_EXTRACTION_ALERT_EMAIL`, e o processo sai com código **42**
+  (distinto de sucesso/crash comum) — o `systemd` (`RestartPreventExitStatus=42`) não reinicia
+  sozinho nesse caso, fica parado até alguém olhar.
+
+### Infraestrutura de execução
+
+- Imagem dedicada `casagora/nocrm-extraction:latest` (`scripts/nocrm-extraction.Dockerfile`,
+  `node:22-alpine` + `rclone` já instalado em build time, não a cada start).
+- Dois `systemd services`: `nocrm-extraction-comments.service` e
+  `nocrm-extraction-attachments.service`, ambos `Restart=on-failure`, presos à rede Docker
+  `easypanel` (alcançam `arkontech_postgres` pelo nome). O de comentários tem
+  `OnSuccess=nocrm-extraction-attachments.service` — quando a fila de comentários esvaziar
+  (saída limpa, não circuit-breaker), o `systemd` dispara o de anexos **sozinho**, sem
+  intervenção manual.
+- `/etc/nocrm-extraction.env` (`600`) — credenciais puxadas da spec viva do serviço Swarm
+  (`docker service inspect casagora_router_api`), mesmo padrão usado no teste da seção 6.
+
+### Execução
+
+- Filas semeadas: **4.128 leads** em `comments` e **4.128 leads** em `attachments` (mais os 5
+  já processados no teste da seção 6 — idempotente, não reprocessou).
+- `nocrm-extraction-comments.service` iniciado às 13:08 UTC de 22/07/2026 — confirmado
+  processando leads reais nos primeiros segundos (`journalctl -u nocrm-extraction-comments`).
+  `attachments.service` habilitado, aguardando o `OnSuccess=` do estágio de comentários.
+- ETA revisado: comentários terminam em ~3 dias corridos (~25/07); anexos começam
+  automaticamente depois, ETA entre 7-18 dias a confirmar com dado real (seção 9).
