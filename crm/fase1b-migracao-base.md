@@ -404,17 +404,41 @@ a equipe comercial pedir reabordagem de cancelados recentes especificamente.
    normalmente para negócios já em andamento; leads novos já nascem só no Imoviz (já é o
    caso hoje, `nocrm_create_enabled` à parte). Migração de base roda em background, sem
    pressa artificial.
-2. **Dia D — noCRM vira somente-leitura**: quando a base completa (seção 5-6) estiver
-   migrada e validada (amostra conferida por alguém da Casagora), desligar a capacidade de
-   criar/editar no noCRM (ou só combinar operacionalmente que ninguém mais mexe lá) — todo
-   trabalho novo passa a ser 100% Imoviz. É o gatilho que libera os Incrementos 3-5 do
-   `fase1-nocrm-plano.md` (desligar os syncs).
-3. **Rede de segurança de 60-90 dias**: manter a assinatura do noCRM ativa, somente-leitura,
+2. **Extração DELTA antes do Dia D** (registrado 22/07/2026, achado do Vagner: os corretores
+   trabalham os leads todo dia — a extração mira um alvo em movimento, não uma foto parada).
+   Medido com dado real (`fase1b-job-api.md` seção 8.1): comparando o mesmo `nocrm_lead_id` nos
+   exports de 19/07 e 21/07 (145.619 leads em comum), **376 (0,26%) mudaram de status em só 2
+   dias** — pequeno em proporção, mas contínuo, e a extração inicial (rodando desde 22/07) vai
+   estar defasada pelo tempo que levar pra terminar (dias) e, principalmente, pelo tempo até o
+   Dia D (que pode ser semanas/meses depois). Antes de virar o Dia D, rodar uma extração delta
+   que cubra dois casos, não só um:
+   - **Leads que mudaram de status** desde a extração inicial — tanto quem entrou no corte
+     (reativação, raro pelo dado de 19-21/07: só 3 casos de volta em 376 mudanças) quanto quem
+     saiu (`todo`/`standby` → `cancelled`, a maioria das mudanças: 59 de 376 no período medido).
+     Precisa de um snapshot novo de `Status`/`Step` pra comparar contra o que já foi extraído.
+   - **Leads já extraídos que ganharam comentários/anexos novos** desde a extração inicial — o
+     trabalho diário dos corretores continua gerando comentário mesmo em quem não mudou de
+     status/etapa. Não basta olhar só quem mudou de status; é preciso reprocessar comentários
+     de **todo** o corte de novo perto do Dia D, não só o delta de status.
+   Viabilidade: a arquitetura já suporta isso sem desenho novo — o job é resumível (fila em
+   Postgres) e o import (futuro) é idempotente por `nocrm_lead_id` (D16), então rodar a
+   extração delta é re-seedar a mesma fila com os mesmos IDs. **Gap conhecido, não implementado
+   ainda**: hoje re-seedar um `nocrm_lead_id` que já está `status='done'` na fila não faz nada
+   (o `seed` usa `ON CONFLICT DO NOTHING`) — pra forçar reprocessamento no delta, vai precisar
+   de um comando novo (`reset` ou equivalente) que volte itens `done` pra `pending` pros leads
+   do corte, em vez de reusar `seed` como está. Registrado aqui como pré-requisito técnico do
+   Dia D, não construído nesta sessão.
+3. **Dia D — noCRM vira somente-leitura**: quando a base completa (seção 5-6) estiver
+   migrada e validada (amostra conferida por alguém da Casagora) **e a extração delta (item 2)
+   tiver rodado e validado**, desligar a capacidade de criar/editar no noCRM (ou só combinar
+   operacionalmente que ninguém mais mexe lá) — todo trabalho novo passa a ser 100% Imoviz. É
+   o gatilho que libera os Incrementos 3-5 do `fase1-nocrm-plano.md` (desligar os syncs).
+4. **Rede de segurança de 60-90 dias**: manter a assinatura do noCRM ativa, somente-leitura,
    por esse período — cobre qualquer lead/documento que a migração tenha perdido e alguém
    precise consultar. Alinhado ao critério já existente do `fase1-nocrm-plano.md` ("2 semanas
    sem incidente" é o mínimo pros syncs automáticos; a rede de 60-90 dias aqui é mais ampla,
    cobre a base de dados como um todo, não só os jobs).
-4. **Cancelamento da assinatura**: só depois da rede de segurança sem nenhum incidente de
+5. **Cancelamento da assinatura**: só depois da rede de segurança sem nenhum incidente de
    "precisei olhar algo que só existia lá". Decisão final e prazo exato ficam com o Vagner
    (pergunta 3 do `fase1-nocrm-plano.md`, ainda em aberto).
 

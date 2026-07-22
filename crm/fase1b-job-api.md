@@ -316,6 +316,49 @@ incerteza de metodologia. Decisão: **semear comentários para os 4.128 leads in
 (não só o subconjunto truncado) — mais simples, sem risco de reconstrução, custo extra pequeno
 (~1.140 requisições a mais, menos de 1 dia extra no orçamento de 1.500/dia).
 
+### 8.1 Resolvido com dado: divergência é metodologia, não movimentação real (22/07/2026)
+
+O Vagner apontou corretamente que os corretores trabalham os leads todo dia (mudam etapa e
+status), então a extração mira um alvo em movimento — a pergunta certa era separar "diferença
+de metodologia" de "movimentação real entre os exports de 19/07 e 21/07" com dado, não
+suposição. Comparado **o mesmo `ID` de lead nos dois exports** (145.619 leads presentes nos
+dois; 100 novos só em 07-21, nenhum sumiu de 07-19 pra 07-21):
+
+| | 07-19 | 07-21 |
+|---|---|---|
+| `won` | 1.581 | 1.582 |
+| `todo` | 1.965 | 2.186 |
+| `standby` | 550 | 360 |
+| `cancelled` | 141.464 | 141.532 |
+| `lost` | 59 | 59 |
+| Corte (não-morto) | **4.096** | **4.128** |
+
+**Só 376 dos 145.619 leads (0,26%) mudaram de status em 2 dias** — movimentação real existe e é
+contínua, mas é pequena. Transições dominantes: `standby→todo` (243, corretor avançou o
+atendimento), `todo→standby` (71), `todo→cancelled` (39) e `standby→cancelled` (20) — essas
+duas últimas são saídas reais do corte (59 no total); só 3 entradas de volta (`cancelled→standby`
+1, `cancelled→todo` 1, `standby→won` 1). O saldo líquido do corte (4.096→4.128, +32) bate com
+"+100 leads novos, alguns não-vivos" menos "~59 saíram por cancelamento" — **totalmente
+explicado por movimentação real pequena**, nada próximo de reconciliar uma diferença de ~1.600
+leads.
+
+**Conclusão**: a divergência de ~1.600 leads entre os 4.128 verificados e os 5.730-5.763 do
+documento original **é diferença de metodologia**, não movimentação real entre os exports —
+a movimentação real no período é ordens de grandeza menor que a divergência. Fica confirmado
+que o número certo pra trabalhar é o verificado (4.128 em 07-21); a origem exata do número
+antigo continua não reconstruída, mas deixou de ser candidata a explicar a diferença.
+
+### 8.2 Ampliação para "todos os não-cancelados" — sem leads adicionais (verificado)
+
+Pedido: ampliar a fila pra **todo** lead que não seja `cancelled`/`lost` (não só won/todo/
+standby), já que o custo de omitir é maior que ~1 requisição de comentário por lead a mais.
+Verificado contra o export de 07-21: **só existem 5 valores de `Status`** na base inteira
+(`cancelled`, `won`, `todo`, `standby`, `lost` — somam exatamente os 145.719 registros, sem
+sobra). Ou seja, "não-cancelado/não-perdido" e "won+todo+standby" são **o mesmo conjunto** hoje
+— **4.128, sem leads adicionais pra semear**. A regra de seleção passa a ser, daqui pra frente,
+"`status not in ('cancelled','lost')`" (não mais uma lista fixa de 3 valores) — mesmo resultado
+agora, mas correta automaticamente se um sexto status aparecer num export futuro.
+
 ## 9. ETA recalculado (22/07/2026, com dado verificado + achado de que download não conta na cota)
 
 Esclarecimento primeiro: "o download de anexos não conta na cota" (a busca real do binário via
@@ -381,3 +424,18 @@ novo ok entre comentários e anexos, encadeado via `systemd`.
   `attachments.service` habilitado, aguardando o `OnSuccess=` do estágio de comentários.
 - ETA revisado: comentários terminam em ~3 dias corridos (~25/07); anexos começam
   automaticamente depois, ETA entre 7-18 dias a confirmar com dado real (seção 9).
+- Às ~13:25 UTC, orçamento do dia já em 1.469/1.500 e 1.437 dos 4.128 leads de comentários
+  processados (zero erro) — corrida saudável, ritmo bate com o ETA projetado.
+
+## 11. Teste do canal de alerta (22/07/2026)
+
+Antes de precisar do circuit breaker de verdade, disparado manualmente pelo mesmo caminho que
+ele usa (`raiseAlert()`, novo subcomando `node scripts/nocrm-extraction-job.js test-alert`) —
+não é um envio paralelo/simulado, é o código real. **Achado no processo**: o SDK do Resend não
+lança exceção em erro de API (domínio não verificado, chave inválida etc.) — vem como
+`{error}` no retorno; o código original só checava exceção, então um envio recusado teria
+logado "enviado" incorretamente. Corrigido para checar o campo `error` antes de declarar
+sucesso. Reenviado após o fix: aceito de verdade pelo Resend, `id`
+`d9357d90-e686-4b7a-bae1-1e06096e3263`, para `voliveirarosa@gmail.com`; linha correspondente
+confirmada em `nocrm_extraction_alerts`. Aguardando confirmação de recebimento na caixa de
+entrada.
