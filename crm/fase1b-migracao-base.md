@@ -831,3 +831,118 @@ verdade em produção — sem isso, o endpoint responde 500 (`rclone` ausente/se
 
 **Esforço total estimado: pequeno (~1-2h), só o ícone/rótulo de comentário — tudo o mais já
 funciona sem tocar em frontend.**
+
+## 8.9 Import real em produção — EXECUTADO (23/07/2026)
+
+Sequência completa autorizada pelo Vagner e executada nesta data. Leads + comentários migrados;
+anexos entram na 2ª passada conforme a extração avança (idempotente, sem re-rodar nada).
+
+### Backup pré-import
+
+`pg_dump` fresco, fora da rotina diária de retenção (pasta dedicada, não expira em 7 dias):
+- Local: `/root/backups/pre-import-fase1b/casagora_router_pre-import-fase1b_2026-07-23_122347.sql.gz` (89 MiB)
+- R2: `r2:arkontech/pre-import/casagora_router_pre-import-fase1b_2026-07-23_122347.sql.gz`
+- Checksum SHA-256 conferido local vs. R2: `074ca730ff17906ae8273115913463c55e46466c6ed444f4637fe970c4eae438` (idêntico)
+
+### Dry-run contra produção (ROLLBACK) — divergência investigada e explicada
+
+Antes do dry-run, foi adicionado ao script um relatório de **distribuição por corretor/etapa**
+(acumulado em JS durante o loop — uma query pós-commit perderia a contagem no dry-run, que reverte
+a transação). Testado com `--limit 30` contra `casagora_router_import_test` antes de rodar contra
+produção.
+
+Dry-run completo (4.128 leads, sem `--limit`) contra `casagora_router`, dentro de transação com
+`ROLLBACK`:
+
+| | Resultado |
+|---|---|
+| Leads | 4.128 processados, 4.128 criados, **0 erros** |
+| Comentários | **55.284** inseridos, 0 erros |
+| Anexos | 27 inseridos (só 3 leads já tinham dado staged), 0 erros |
+| Resolução de corretor | 3.287 diretos + 69 desligados criados + 772 desligados reaproveitados = **4.128, 0 no balde genérico** |
+
+Confirmado no banco depois do dry-run: `deals` com `nocrm_lead_id` = 0 (nada persistiu).
+
+**Divergência investigada antes do OK final**: o teste anterior no clone (seção 8.6) tinha
+33.858 comentários migrados, não 55.284. Causa confirmada com número, não suposição — consultado
+direto em `nocrm_comments_raw` no momento do dry-run: **4.128 leads com comentário staged, soma de
+55.284 comentários** (`sum(jsonb_array_length(comments))`), batendo exato com o relatório. O teste
+antigo rodou contra um clone tirado quando a extração de comentários estava ~62% completa (2.540/
+4.128 leads, ver observação de sessão do dia); 2.540/4.128 × 55.284 ≈ 34.020 — proporcional aos
+33.858 do teste antigo. **Extração de comentários está 100% completa agora** (confirmado:
+`nocrm_extraction_queue` mostra 4.128/4.128 `done` em `comments`, alerta
+`extraction_milestone_complete:comments` disparado às 06:59 UTC de 23/07/2026); é isso que explica
+o aumento, não um bug.
+
+A segunda divergência esperada (balde genérico "Histórico Casagora" foi de 1.803 leads sem dono no
+teste antigo pra **0** agora) é a melhoria pretendida do fix de resolução em 3 camadas +
+normalização de espaço duplo (`foldAccents`) feito mais cedo no mesmo dia (PR #18,
+`casagora-router`) — todo lead ganhou dono real (agente ativo ou desligado preservado como
+inativo). Números de corretores já conhecidos batem exato com o teste antigo (Karla Martins 164,
+Madalena Luciano 166, Sharlene Vieira/Alessandra Domingos 272 cada), confirmando que só a resolução
+de dono mudou, não a lógica de migração em si.
+
+### Execução real — COMMIT
+
+Rodado sem `--dry-run` logo após o OK do Vagner. Relatório final **idêntico linha a linha** ao
+dry-run (leads/comments/attachments/agent_match/distribution comparados campo a campo em JSON —
+0 diferenças). Confirmado no banco pós-execução:
+
+- `deals` com `nocrm_lead_id`: 4.128
+- `activities` com `nocrm_comment_key`: 55.284
+- `deal_attachments` com `nocrm_attachment_id`: 27
+- `agents` inativos novos: 69 (total de agentes foi de 42 → 111)
+
+### Validação pós-import
+
+- **Amostra de 10 deals** (mistura deliberada: 2 de corretor desligado com muitos comentários —
+  deal 8226/Gracieli Figueiredo meurer com 100, deal 9029/Josiele Neri com 92 —, 2 de corretor
+  desligado com zero comentários, 3 ativos com anexo migrado do R2 conferido em
+  `deal_attachments` — ex.: deal 9927, 12 anexos incl. PDF/imagem/planilha com `stored_path`
+  apontando pro caminho certo no R2 —, 3 ativos em etapa inicial). Conteúdo dos comentários
+  inspecionado direto: autor prefixado (`"Gracieli Figueiredo meurer: ..."`), cronologia
+  coerente (jun/2025 a dez/2025 no deal 8226), quebra de linha dentro de comentário preservada
+  corretamente.
+- **Logs do `casagora_router_api`**: sem erro/exception/fatal nos 15 minutos ao redor da execução.
+- **Watermark de leads**: `lead_events`/`assignments` sem nenhuma linha nova entre o watermark
+  pré-execução (`lead_events` id 10158, `assignments` id 6711) e depois — nenhum lead real de
+  produção foi tocado ou interferiu na corrida.
+
+### Rollback (não precisou ser usado)
+
+```bash
+source /etc/casagora-router.env
+docker run --rm --network easypanel -v /opt/repos/casagora-router:/app:ro -w /app \
+  -e DATABASE_URL="$DATABASE_URL" \
+  casagora/nocrm-extraction:latest node scripts/nocrm-import-rollback.js --confirm
+```
+
+Apaga só deals intocados desde o import (`updated_at <= nocrm_imported_at`); cascata cuida de
+`activities`/`deal_attachments`. Camada mais profunda: restaurar o backup pré-import do R2 (acima).
+
+### Deploy do frontend (PR #2 — rótulo "Importado do noCRM" na timeline)
+
+`casagora-sistema` PR #2 já estava mergeado em `main` mas não deployado (imagem em produção era de
+21/07, anterior ao merge). Rollback local tageado antes do rebuild:
+`imoviz-frontend:rollback-pre-nocrm-timeline-20260723` (a imagem que estava rodando, criada
+21/07). Build novo a partir de `main` (inclui PR #2) com os build-args obrigatórios
+(`NEXT_PUBLIC_API_URL`, `NEXT_PUBLIC_TURNSTILE_SITE_KEY`), `docker service update --force`,
+confirmado o hash da imagem batendo entre `docker ps`/`docker image inspect` e `/login`
+respondendo 200.
+
+Rollback do frontend, se precisar:
+```bash
+docker service update --force --image imoviz-frontend:rollback-pre-nocrm-timeline-20260723 imoviz_frontend
+```
+
+### Status da extração de anexos no fechamento
+
+- Fila (`nocrm_extraction_queue`, `task_type='attachments'`): 5 `done`, 4.123 `pending` (só 3 leads
+  com dado já utilizável pelo import — 2 dos 5 `done` resultaram em zero anexos reais para aquele
+  lead).
+- Nenhum alerta de checkpoint de volume disparado ainda (`nocrm_extraction_alerts` sem entrada de
+  checkpoint de anexos) — extração de anexos segue de baixo volume/ritmo, sem erro registrado.
+- Import é idempotente: conforme a extração de anexos avançar, rodar
+  `node scripts/nocrm-import-job.js import` de novo (sem `--limit`/`--ids`) migra só os anexos
+  novos staged desde a última corrida — leads/comentários já migrados não duplicam
+  (`on conflict do nothing`/`do update ... where is distinct from`).
