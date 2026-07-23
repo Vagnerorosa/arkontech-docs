@@ -462,7 +462,7 @@ permissão `600`, não valor direto no crontab).
 
 | Credencial | Painel | Observação |
 |---|---|---|
-| `FACEBOOK_ACCESS_TOKEN` | [Meta for Developers](https://developers.facebook.com/) → app `FACEBOOK_APP_ID` → ferramenta de geração de token (Graph API Explorer ou, se o token atual for de **System User**, Business Settings → System Users → gerar novo token para o mesmo usuário/permissões) | **Preciso que confirme**: o token atual é de um usuário do sistema (System User, recomendado — não expira por login) ou de um usuário comum exportado como long-lived (expira em ~60 dias, precisa ser trocado periodicamente)? Não há registro em `arkontech-docs` de qual dos dois foi usado originalmente — gere mantendo o mesmo tipo pra não mudar o comportamento de expiração |
+| `FACEBOOK_ACCESS_TOKEN` | **Business Settings** (business.facebook.com/settings) → Usuários → **Usuários do sistema** → criar um novo → ver 4.8 pra permissões exatas | **Confirmado via introspecção ao vivo** (`GET /admin/facebook/token-status`, 23/07/2026): o token atual é um **token de usuário pessoal** (`/me` retorna "Vagner Rosa", não um System User) com ~50 permissões concedidas — bem mais amplo do que o código realmente usa. Migrar pra System User (decisão do Vagner) é uma melhoria real, não só manter o padrão — não expira por login/senha, e dá a chance de reduzir o escopo pro mínimo necessário (ver 4.8) |
 | `NOCRM_API_KEY` | painel do noCRM (`https://casagora.nocrm.io`, `NOCRM_SUBDOMAIN=casagora`) → Configurações/Integrações → API | Confirmar que o novo key tem o mesmo escopo de acesso do atual (leitura+escrita de leads/comentários/anexos) |
 | `RESEND_API_KEY` | [resend.com](https://resend.com/) → API Keys | Recomendo criar a nova ANTES de revogar a antiga (Resend permite múltiplas chaves ativas simultaneamente) — evita janela sem envio de e-mail |
 | `FACEBOOK_APP_SECRET` | Meta for Developers → app `FACEBOOK_APP_ID` → App Settings → Basic → App Secret → "Show"/"Reset" | Resetar invalida o secret anterior imediatamente (sem grace period, diferente do Turnstile) — coordenar com a Seção 4.5, aplicar no servidor logo em seguida |
@@ -698,6 +698,74 @@ usada pro Postgres/JWT — os dois lados o mais simultâneo possível):
 Depois de tudo validado e os valores salvos no seu gerenciador de
 credenciais: `shred -u -z /root/secrets/rotation-20260723/*.txt && rmdir
 /root/secrets/rotation-20260723` — mesmo procedimento de 19/07.
+
+### 4.8 System User + permissões exatas do `FACEBOOK_ACCESS_TOKEN` (23/07/2026)
+
+**Onde criar o System User** (Business Manager, não o Meta for Developers
+direto — o gerador de token de System User vive dentro do Business
+Settings):
+1. `business.facebook.com/settings` → menu esquerdo **Usuários** →
+   **Usuários do sistema** ("System Users").
+2. **Adicionar** → nome (ex. "casagora-router-api") → papel **Admin**
+   (mais simples pra acessar todos os ativos abaixo sem ficar ajustando
+   um por um; "Employee" funciona também se preferir escopo mais restrito
+   e atribuir os 3 ativos manualmente).
+3. Com o usuário criado, **Atribuir ativos** → adicionar os 3 ativos que
+   o código realmente usa (ver `FACEBOOK_AD_ACCOUNT_ID`/`FACEBOOK_PAGE_ID`/
+   `FACEBOOK_IG_ID` já configurados no `casagora_router_api`, você
+   reconhece qual é qual no painel):
+   - **Conta de anúncios** — acesso "Visualizar" já basta (só leitura,
+     ver 4.8.1).
+   - **Página** — "Acesso total" ou ao menos os controles que cobrem
+     leitura de conteúdo/insights e leads (a granularidade exata de
+     "Página" no Business Settings varia com a versão da UI — se só
+     tiver a opção total, use total, é mais simples que sub-permissão).
+   - **Conta do Instagram** — vinculada à Página acima, deveria vir
+     junto automaticamente.
+4. No mesmo usuário → **Gerar novo token** → selecionar o **app**
+   (o mesmo `FACEBOOK_APP_ID` que o `casagora_router_api` já usa) →
+   marcar as permissões da lista 4.8.1 → **Gerar token**.
+
+#### 4.8.1 Permissões — levantadas direto do código, não da lista de ~50 do token atual
+
+O token em uso hoje tem quase 50 permissões concedidas (confirmado via
+`GET /admin/facebook/token-status` em produção) — a maioria delas
+(`whatsapp_business_management`, `catalog_management`, `publish_video`,
+`manage_fundraisers`, os vários `commerce_*`/`instagram_branded_content_*`,
+etc.) **não é usada em nenhum lugar do código** (`fbGet`, único cliente
+Graph API do projeto, é só leitura — nenhum `fbPost` existe, confirmado
+por busca no arquivo inteiro). É sobra de um token pessoal provavelmente
+gerado uma vez via Graph API Explorer marcando mais caixas do que o
+necessário. Migrar pra System User é a oportunidade de reduzir pro
+mínimo real, levantado direto dos endpoints chamados
+(`src/server.js`, função `fbGet` e chamadas em `fbGet('/...')`):
+
+| Permissão | Por quê (endpoint que usa) |
+|---|---|
+| `leads_retrieval` | `/{leadgen_id}` — puxar o dado do lead do formulário (o core da integração) |
+| `ads_read` | `/{ad_account_id}`, `/{ad_account_id}/insights`, `/{ad_account_id}/adsets`, `/{ad_account_id}/campaigns`, `/{ad_id}`, `/{adset_id}`, `/{campaign_id}` — nomes de campanha/adset/ad, saldo, orçamento, gasto (todas leitura, nada cria/edita anúncio) |
+| `pages_show_list` | necessário pra resolver o token/acesso da própria Página a partir da conta que chama |
+| `pages_read_engagement` | `/{form_id}` (nome do formulário de leadgen, objeto da Página) |
+| `read_insights` | `/{ad_account_id}/insights`, `/{page_id}/insights` — métricas agregadas |
+| `instagram_basic` | `/{instagram_id}` e leitura básica da conta IG vinculada |
+| `instagram_manage_insights` | `/{instagram_id}/insights` |
+| `business_management` | padrão pra um System User acessar ativos pertencentes a um Business (a conta de anúncios/página são ativos do Business, não pessoais) |
+
+**Não marcar** (não usado em nenhum lugar do código, reduz superfície):
+`ads_management` (só lê, não cria/edita anúncio), qualquer
+`whatsapp_business_*` (o WhatsApp aqui é só via Evolution API, não a API
+oficial do WhatsApp Business), `catalog_management`, `commerce_*`,
+`instagram_branded_content_*`, `publish_video`, `manage_fundraisers`,
+`instagram_content_publish`/`instagram_manage_comments`/
+`instagram_manage_messages`/`instagram_manage_events` (nada no código
+publica ou responde no Instagram, só lê insights).
+
+**Se alguma chamada falhar depois da troca com `permission_denied`/erro
+`10`**: sinal de que uma permissão real está faltando nesta lista — mais
+fácil adicionar uma a mais depois (gerar novo token com a permissão extra)
+do que já sair com as ~50 originais. Validação sugerida (4.5, passo 4)
+cobre exatamente os pontos onde uma permissão faltando apareceria primeiro
+(relatório de leads, sync).
 
 ---
 
