@@ -253,3 +253,26 @@ re-importação do mesmo `nocrm_lead_id`, nunca por telefone. Como nenhum
 `lead_crm_import` são estruturas paralelas sem link), não há risco de
 colisão com dado pré-existente — todo lead do corte de migração gera um
 `deal` novo, sem checagem de duplicata por telefone.
+
+### D17 — Cutover será GRADUAL, com piloto de 2-3 corretores antes da
+virada geral (23/07/2026). Contexto: até agora o plano de adoção
+(`crm/fase1b-migracao-base.md` seção 7) assumia uma virada de uma vez só
+("Dia D" único, noCRM vira somente-leitura pra todo mundo no mesmo dia).
+Achado novo do Vagner que muda essa premissa: **a equipe da Casagora hoje
+NÃO usa o pipeline/deals do Imoviz no dia a dia** — o uso real é só o
+roteador (distribuição automática de lead) + cadastro manual de lead
+avulso; o trabalho de negociação (comentário, etapa, anexo) inteiro
+acontece no noCRM. Consequência prática: o import de 4.128 deals/55.284
+comentários executado em 23/07/2026 (ver `project_fase1b_import_executado_producao`)
+**foi invisível pra equipe** — ninguém olhou o Kanban do Imoviz pra ver o
+resultado, porque ninguém usa o Kanban do Imoviz ainda.
+Escolha: antes da virada geral, rodar um **piloto com 2-3 corretores**
+operando 100% pelo Imoviz (com treinamento), validar o fluxo diário completo
+na prática, só then decidir a virada para o resto da equipe. Isso substitui
+o "Dia D único" do item 7.3 de `fase1b-migracao-base.md` por um cutover em
+duas fases (piloto → geral) — a data proposta de 11-15/08/2026 (seção 7.1)
+passa a ser a data-alvo do **início do piloto**, não da virada completa;
+a virada geral fica sem data até o piloto validar. Pré-requisito direto:
+a auditoria do fluxo diário do corretor (`crm/fase1b-auditoria-fluxo-corretor.md`,
+23/07/2026) — é o que embasa se o Imoviz já está pronto pra receber os
+corretores-piloto ou se faltam telas/fluxos antes disso.
