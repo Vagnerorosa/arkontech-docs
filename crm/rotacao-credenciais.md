@@ -465,7 +465,10 @@ permissão `600`, não valor direto no crontab).
 | `FACEBOOK_ACCESS_TOKEN` | [Meta for Developers](https://developers.facebook.com/) → app `FACEBOOK_APP_ID` → ferramenta de geração de token (Graph API Explorer ou, se o token atual for de **System User**, Business Settings → System Users → gerar novo token para o mesmo usuário/permissões) | **Preciso que confirme**: o token atual é de um usuário do sistema (System User, recomendado — não expira por login) ou de um usuário comum exportado como long-lived (expira em ~60 dias, precisa ser trocado periodicamente)? Não há registro em `arkontech-docs` de qual dos dois foi usado originalmente — gere mantendo o mesmo tipo pra não mudar o comportamento de expiração |
 | `NOCRM_API_KEY` | painel do noCRM (`https://casagora.nocrm.io`, `NOCRM_SUBDOMAIN=casagora`) → Configurações/Integrações → API | Confirmar que o novo key tem o mesmo escopo de acesso do atual (leitura+escrita de leads/comentários/anexos) |
 | `RESEND_API_KEY` | [resend.com](https://resend.com/) → API Keys | Recomendo criar a nova ANTES de revogar a antiga (Resend permite múltiplas chaves ativas simultaneamente) — evita janela sem envio de e-mail |
-| `EVOLUTION_API_KEY` | **Não tem painel externo** — ver 4.2, é diferente dos outros 3 |
+| `FACEBOOK_APP_SECRET` | Meta for Developers → app `FACEBOOK_APP_ID` → App Settings → Basic → App Secret → "Show"/"Reset" | Resetar invalida o secret anterior imediatamente (sem grace period, diferente do Turnstile) — coordenar com a Seção 4.5, aplicar no servidor logo em seguida |
+| `FACEBOOK_VERIFY_TOKEN` | **Não precisa gerar no painel** — valor arbitrário nosso, só colado no Meta na hora de (re)verificar o webhook | Já gerado (`facebook_verify_token.txt`), ver 4.6 pra ordem correta |
+| `NOCRM_WEBHOOK_TOKEN` | **Não precisa gerar no painel** — valor arbitrário nosso, só colado na config do webhook do noCRM | Já gerado (`nocrm_webhook_token.txt`), ver 4.6 pra ordem correta — este tem janela de risco real, ler antes de trocar |
+| `EVOLUTION_API_KEY` | **Não tem painel externo** — ver 4.2, é diferente dos outros |
 
 ### 4.2 Evolution — caso à parte, ler antes de rotacionar
 
@@ -483,23 +486,59 @@ workflow do `agenciadeia_n8n` guarda a chave nas próprias credenciais
 internas (banco do n8n, não env var), esse grep **não alcança** e a
 rotação quebraria aquele workflow sem aviso.
 
-**Recomendação**: antes de rotacionar,
-1. Confirmar com quem administra o `agenciadeia_n8n`/outros projetos
-   deste Swarm se algum deles chama a Evolution API com esta mesma chave
-   (não dá pra confirmar só por grep de arquivo).
-2. Se confirmado que só o `casagora_router_api` e o job de extração usam
-   essa chave, a rotação é simples: gerar um valor novo (`openssl rand
-   -hex 32`, mesmo padrão do token do Carhauler na Seção 3) e aplicar nos
-   3 lugares (Evolution + 2 consumidores, ver 4.3).
-3. Se não der pra confirmar com segurança, ou quiser algo com escopo
-   menor: Evolution API v2 suporta **token por instância** além do
-   global — perguntar/confirmar se `EVOLUTION_INSTANCE=Sistema Casagora`
-   já tem (ou pode ganhar) um token próprio, isolado dos outros projetos,
-   em vez de rotacionar a chave `AUTHENTICATION_API_KEY` global.
+**Recomendação original**: confirmar com quem administra `agenciadeia_n8n`
+antes de rotacionar — decisão do Vagner (23/07/2026): ele mesmo administra
+o n8n, e pediu pra eu levantar o lado técnico (consumidores detectáveis
+no servidor + consulta ao banco do n8n) enquanto ele confirma o resto.
 
-**Ficou pendente de decisão sua** — não vou gerar/aplicar o valor da
-Evolution até confirmar o escopo (global vs. por-instância) e o impacto
-nos outros consumidores do Swarm.
+### 4.2.1 Investigação do lado do servidor (23/07/2026) — resultado: risco bem menor do que a suposição inicial
+
+n8n (`agenciadeia_n8n`) usa **SQLite local** (`/home/node/.n8n/database.sqlite`
+dentro do volume `agenciadeia_n8n_data`), não um Postgres separado — dá pra
+consultar direto (`node:sqlite`, modo `readOnly`, sem escrever nada) sem
+precisar abrir a UI do n8n. Consultado (só nomes/contagens, nenhum dado de
+credencial foi lido — o campo `data` de `credentials_entity` é criptografado
+pelo próprio n8n e nunca foi acessado):
+
+- **Existe 1 credencial cadastrada do tipo `evolutionApi`** ("Evolution
+  account") — mas **0 workflows a referenciam** pelo mecanismo estruturado
+  de credencial do n8n.
+- **1 workflow** ("FACEBOOK CAPTAÇÃO LEADS") tem um node `httpRequest`
+  ("Envia Whats corretor2") que chama `https://evolution.arkontech.com.br`
+  com a API key **hardcoded direto no parâmetro do header** (`apikey`,
+  35 caracteres, não é uma expressão/variável do n8n) — não usa a
+  credencial estruturada, é um valor colado direto no node. Confirmado
+  que não é vazio/placeholder (tamanho bate com um key real), mas **não
+  lido o valor em si**.
+- **Todos os 5 workflows desta instância n8n estão INATIVOS** (`active=0`
+  em todos, incluindo o que tem o hardcode de Evolution) — nada está
+  rodando de verdade neste n8n agora. Confirmado consultando
+  `workflow_entity` inteira, não só os que mencionam Evolution/Facebook.
+- De bônus (relevante pra Seção 4 como um todo, não só Evolution): esse
+  mesmo workflow inativo também usa **2 credenciais Facebook Graph API**
+  próprias do n8n ("Facebook Graph Leads Casagora", "Facebook Graph
+  account - n8n CASAGORA") — dado criptografado pelo n8n, não lido, mas
+  a existência delas sugere que **se esse workflow for reativado no
+  futuro**, vai precisar de credenciais Facebook próprias atualizadas
+  também (independentes do `FACEBOOK_ACCESS_TOKEN` do `casagora_router_api`
+  — n8n guarda a própria cópia). Não é urgente (workflow inativo), mas
+  registrado aqui pra não ser esquecido se alguém reativar esse workflow
+  sem saber que as credenciais internas podem estar defasadas.
+
+**Conclusão prática**: como nenhum workflow está ativo, rotacionar a
+chave global da Evolution agora **não derruba nada em produção no n8n**
+— o único ponto de atenção é higiene (o valor hardcoded no workflow
+inativo fica desatualizado depois da rotação; se o workflow for
+reativado algum dia, alguém vai precisar notar e trocar esse header
+manualmente, mesma lógica dos scripts hardcoded do host). Decisão final
+de prosseguir com a rotação, mesmo assim, é do Vagner — ele está
+confirmando separadamente se há mais algum uso da Evolution fora do que
+esse levantamento técnico alcança (ex.: uso manual/pontual não registrado
+em nenhum workflow salvo).
+
+**Valor novo já gerado e reservado** (`/root/secrets/rotation-20260723/evolution_api_key.txt`,
+`600`, `openssl rand -hex 32`) — **NÃO aplicado em lugar nenhum ainda**,
+aguardando confirmação final antes do passo 4.4.
 
 ### 4.3 Consumidores confirmados (grep exaustivo, 23/07/2026)
 
@@ -520,6 +559,7 @@ padrão da varredura de 22/07 pro Postgres):**
 | `/root/scripts/reprocess_batch.mjs` | Mesmo padrão de fallback hardcoded | `NOCRM_API_KEY`, `EVOLUTION_API_KEY` |
 | `/root/scripts/recover_leads_2026_05_13.mjs` | Valor hardcoded direto (sem `process.env`, nem fallback — a constante É o valor) | `FACEBOOK_ACCESS_TOKEN`, `NOCRM_API_KEY` |
 | `/root/scripts/reprocess_unrouted_batch_20260524.mjs` | Valor hardcoded direto (mesmo padrão) | `NOCRM_API_KEY`, `EVOLUTION_API_KEY` |
+| n8n (`agenciadeia_n8n`), workflow "FACEBOOK CAPTAÇÃO LEADS" (**inativo**), node "Envia Whats corretor2" | Valor hardcoded direto no parâmetro do node (não é o mecanismo de credencial do n8n) — achado via consulta direta ao `database.sqlite` do n8n (ver 4.2.1), não por grep de arquivo | `EVOLUTION_API_KEY` |
 
 **Confirmado seguro (só lê de `process.env`, sem fallback nem valor
 hardcoded)**: `mystery_shopper_interactive.js`, `mystery_shopper_leads.js`,
@@ -534,37 +574,57 @@ seu próprio token de Meta, em arquivo de config separado por cliente —
 não referencia nenhuma das env vars acima, cliente diferente, app Meta
 provavelmente diferente. Não tocado.
 
-### 4.4 Passos (por credencial, depois de ter o valor novo em mãos)
+### 4.4 Diretório de secrets desta rotação (já criado)
 
-1. Cole o valor novo num arquivo temporário na VPS, nunca no chat:
-   ```bash
-   install -m 600 /dev/null /root/secrets/rotation-20260723/facebook_access_token.txt
-   nano /root/secrets/rotation-20260723/facebook_access_token.txt   # cole o valor, salve
-   ```
-   Repita para cada credencial (`nocrm_api_key.txt`, `resend_api_key.txt`,
-   e `evolution_api_key.txt` se/quando decidido).
-2. Aplicar no serviço Swarm (sem imprimir o valor no terminal):
+`/root/secrets/rotation-20260723/` (permissão `700`, dono `root`) — 7 arquivos,
+um por credencial, todos `600`:
+
+| Arquivo | Estado | Quem preenche |
+|---|---|---|
+| `facebook_access_token.txt` | vazio | **Você** — cole o valor gerado no Meta for Developers |
+| `facebook_app_secret.txt` | vazio | **Você** — cole o valor gerado/resetado no Meta for Developers |
+| `facebook_verify_token.txt` | **já preenchido** (`openssl rand -hex 32`, gerado por mim) | Nada a fazer — só copiar esse valor pro painel do Meta na hora (ver 4.5) |
+| `nocrm_api_key.txt` | vazio | **Você** — cole o valor gerado no painel do noCRM |
+| `nocrm_webhook_token.txt` | **já preenchido** (`openssl rand -hex 32`, gerado por mim) | Nada a fazer — só copiar esse valor pro painel do noCRM na hora (ver 4.5) |
+| `resend_api_key.txt` | vazio | **Você** — cole o valor gerado no resend.com |
+| `evolution_api_key.txt` | **já preenchido**, mas **não aplicar ainda** (ver 4.2.1) | Aguardando sua confirmação final |
+
+Pra preencher um arquivo vazio, direto na VPS, nunca no chat:
+```bash
+nano /root/secrets/rotation-20260723/facebook_access_token.txt   # cole o valor, Ctrl+O, Enter, Ctrl+X
+```
+
+### 4.5 Passos — credenciais simples (Facebook access token, App Secret, noCRM key, Resend)
+
+Essas 4 não têm o problema de "outro lado também precisa saber o valor
+antes de aceitar chamada" (diferente dos 2 tokens de webhook, ver 4.6) —
+rotacionam com uma folga maior.
+
+1. Depois de cada arquivo preenchido (ver 4.4), aplicar no serviço Swarm
+   sem nunca imprimir o valor no terminal:
    ```bash
    docker service update --env-add "FACEBOOK_ACCESS_TOKEN=$(cat /root/secrets/rotation-20260723/facebook_access_token.txt)" casagora_router_api
-   docker service ps casagora_router_api --no-trunc | head -5   # confirma saudável antes do próximo
+   docker service update --env-add "FACEBOOK_APP_SECRET=$(cat /root/secrets/rotation-20260723/facebook_app_secret.txt)" casagora_router_api
+   docker service update --env-add "NOCRM_API_KEY=$(cat /root/secrets/rotation-20260723/nocrm_api_key.txt)" casagora_router_api
+   docker service update --env-add "RESEND_API_KEY=$(cat /root/secrets/rotation-20260723/resend_api_key.txt)" casagora_router_api
+   docker service ps casagora_router_api --no-trunc | head -5   # confirma saudável depois de cada um
    ```
-   Repetir pra `NOCRM_API_KEY`/`RESEND_API_KEY` (e `EVOLUTION_API_KEY` se
-   decidido) — um `--env-add` por vez, confirmando saúde entre cada um.
-3. Atualizar `/etc/nocrm-extraction.env` (editor direto, arquivo já
-   `600`) pros 3 valores que ele guarda (`NOCRM_API_KEY`,
-   `EVOLUTION_API_KEY`, `RESEND_API_KEY`).
-4. Corrigir o residual (mesmo espírito da correção do Postgres em 22/07 —
+2. Atualizar `/etc/nocrm-extraction.env` (editor direto, arquivo já `600`)
+   com o `NOCRM_API_KEY`/`RESEND_API_KEY` novos (esse arquivo não guarda
+   Facebook).
+3. Corrigir o residual (mesmo espírito da correção do Postgres em 22/07 —
    mais barato corrigir do que confiar que "ninguém lê isso"):
    - `/etc/casagora-router.secrets.env`: atualizar os valores E corrigir a
-     permissão pra `600` (`chmod 600`) — ou, se realmente não é usado por
-     nada (confirmar antes com mais uma rodada de busca), apagar.
+     permissão pra `600` (`chmod 600`) — ou, se confirmado que não é usado
+     por nada, apagar.
    - Os 4 scripts em `/root/scripts/`: trocar o valor hardcoded/fallback
      pelo novo, ou (melhor, já que são scripts de recuperação de
      incidentes antigos de maio/2026, prováveis de não rodar de novo)
-     remover o hardcode e exigir só `process.env`, deixando de funcionar
-     sem a env setada explicitamente — mais seguro que carregar segredo
-     morto no disco indefinidamente.
-5. Validação:
+     remover o hardcode e exigir só `process.env`.
+   - Se a Evolution for rotacionada (4.2.1): o node "Envia Whats
+     corretor2" no workflow inativo do n8n também precisa do valor novo
+     colado manualmente (não tem `process.env` pra puxar sozinho).
+4. Validação:
    - Facebook: `GET /admin/report/leads` ou próximo lead do roteador
      processando sem erro `190`/`OAuthException` nos logs.
    - noCRM: próximo sync (`nocrm-sync` scheduled) ou chamada manual a
@@ -573,9 +633,71 @@ provavelmente diferente. Não tocado.
      o canal real de alerta, já usado antes nesta mesma investigação).
    - Evolution (se rotacionado): próxima notificação de WhatsApp de lead
      novo saindo sem erro nos logs do `casagora_router_api`.
-6. Apagar `/root/secrets/rotation-20260723/` (`shred -u -z`) só depois de
-   validado tudo e você ter salvo os valores no gerenciador de
-   credenciais — mesmo procedimento de 19/07.
+
+### 4.6 Passos — tokens de webhook (`FACEBOOK_VERIFY_TOKEN`, `NOCRM_WEBHOOK_TOKEN`): ORDEM IMPORTA
+
+Diferente dos 4 acima, estes dois são conferidos **a cada chamada de
+webhook recebida** (não é só "nós chamamos alguém", é "alguém nos chama e
+inclui o token") — trocar na ordem errada rejeita webhooks de verdade
+(leads/eventos perdidos) até corrigir.
+
+#### `FACEBOOK_VERIFY_TOKEN` — risco baixo, é só handshake
+
+Confirmado no código (`src/server.js`): esse token só é conferido no
+momento em que o Meta faz o **handshake de verificação da assinatura do
+webhook** (botão "Verify and Save" no painel) — **não** é enviado em cada
+evento de webhook normal depois disso. Ou seja, trocar o valor no nosso
+servidor não rejeita nenhum evento em trânsito; só importa bater os dois
+lados na hora de clicar "Verify and Save".
+
+**Ordem segura**:
+1. Aplicar no servidor **primeiro** (usa o valor já gerado, `facebook_verify_token.txt`):
+   ```bash
+   docker service update --env-add "FACEBOOK_VERIFY_TOKEN=$(cat /root/secrets/rotation-20260723/facebook_verify_token.txt)" casagora_router_api
+   ```
+2. **Depois**, no Meta for Developers → App → Webhooks → editar a
+   subscrição → colar o mesmo valor no campo "Verify Token" → clicar
+   "Verify and Save". O Meta chama nosso endpoint na hora — se o servidor
+   já tiver o valor novo (passo 1 primeiro), verifica de primeira.
+3. Validação: o próprio botão "Verify and Save" já confirma (fica verde/
+   sem erro). Não precisa de teste adicional.
+
+#### `NOCRM_WEBHOOK_TOKEN` — risco real, minimizar a janela
+
+Esse **é** conferido em toda chamada (`POST /webhooks/nocrm`, checagem
+`token !== NOCRM_WEBHOOK_TOKEN` a cada request, `src/server.js` linha
+~2320) — troca fora de sincronia rejeita (401) qualquer webhook do noCRM
+que chegar na janela entre os dois lados mudarem.
+
+**Ordem que minimiza a janela** (mesmo princípio da "sequência rápida" já
+usada pro Postgres/JWT — os dois lados o mais simultâneo possível):
+1. Ter os dois lados prontos pra trocar **ao mesmo tempo**: painel do
+   noCRM aberto na tela de configuração do webhook, valor novo
+   (`nocrm_webhook_token.txt`) já gerado e à mão.
+2. Aplicar no servidor:
+   ```bash
+   docker service update --env-add "NOCRM_WEBHOOK_TOKEN=$(cat /root/secrets/rotation-20260723/nocrm_webhook_token.txt)" casagora_router_api
+   ```
+3. **Imediatamente em seguida** (não esperar validar o passo 2 antes —
+   quanto mais rápido, menor a janela), atualizar a URL do webhook
+   configurada no painel do noCRM com o novo `token=` (querystring) ou
+   header, usando o mesmo valor do arquivo.
+4. **Rede de segurança já existente, nenhuma construída nova**: mesmo que
+   algum evento seja rejeitado nessa janela (tipicamente poucos segundos),
+   o sync diário (`nocrm-sync`, mecanismo 3) e o `nocrm-webhook-worker`
+   (fila com retomada) já existentes cobrem a reconciliação de qualquer
+   lead/comentário que o webhook tenha perdido nesse intervalo — não é
+   perda permanente, só atraso até o próximo sync.
+5. Validação: `journalctl`/logs do `casagora_router_api` sem `401` em
+   `/webhooks/nocrm` nos minutos seguintes; ou, mais direto, gerar um
+   evento de teste no noCRM (comentário novo num lead de teste) e
+   confirmar que chega.
+
+### 4.7 Encerramento
+
+Depois de tudo validado e os valores salvos no seu gerenciador de
+credenciais: `shred -u -z /root/secrets/rotation-20260723/*.txt && rmdir
+/root/secrets/rotation-20260723` — mesmo procedimento de 19/07.
 
 ---
 
