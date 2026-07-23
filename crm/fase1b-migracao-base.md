@@ -768,13 +768,11 @@ começou, ver `fase1b-job-api.md` §16.8).
 
 Escopo levantado, sem código:
 
-1. **Timeline de comentários** (`ActivityFeed.tsx`, `casagora-sistema/frontend/src/components/
-   pipeline/`): já renderiza qualquer `activities.type` não tratado especificamente (fallback
-   genérico, ícone `FileText`) — comentários migrados **já apareceriam sem nenhuma mudança**.
-   Ajuste recomendado, não bloqueante: adicionar `'nocrm_comment'` ao union type `ActivityType`
-   (`src/types/crm.ts`) e um ícone/rótulo próprio no `ICONS` record (ex.: "📋 Importado do
-   noCRM"), mesmo padrão que `isTask` já usa ali. **Esforço: pequeno, 1 componente + 1 tipo,
-   ~1-2h.**
+1. ~~**Timeline de comentários**~~ — **IMPLEMENTADO** (22/07/2026, PR aberto, NÃO mergeado):
+   `casagora-sistema` PR #2 (`feat/nocrm-comment-timeline`) — `'nocrm_comment'` adicionado ao
+   union `ActivityType` (`src/types/crm.ts`) + ícone `History`/rótulo "Importado do noCRM" em
+   `ActivityFeed.tsx`, mesmo padrão que `isTask` já usa ali. `tsc --noEmit` e `npm run lint`
+   limpos (warnings pré-existentes em outros arquivos, não relacionados).
 2. **Anexos** (`AttachmentsSection.tsx` + `deal_attachments` API): **nenhuma mudança
    necessária** — a listagem e o download já são genéricos (não expõem `stored_path`/
    `storage_backend` ao cliente, `DealAttachment` type não muda) e o proxy BFF
@@ -784,6 +782,52 @@ Escopo levantado, sem código:
    **Esforço: zero.**
 3. **Nenhum outro ajuste identificado** — `deals`/pipeline/Kanban não precisam saber que um
    deal veio do noCRM pra funcionar (mesmas colunas que qualquer outro deal usa).
+
+## 8.8 Runbook: montar credenciais R2 no serviço Swarm (preparado, NÃO executado)
+
+Pré-requisito pro branch `storage_backend='r2'` do download de anexo (seção 8.6) funcionar em
+produção. **Documentado aqui pra revisão — nenhum comando abaixo foi executado.** Não existe
+arquivo de infra-como-código pro `casagora_router_api` (o serviço Swarm é gerenciado via
+EasyPanel/`docker service update` direto, sem `docker-compose`/stack file versionado) — por
+isso este runbook, não um PR de infra, é o artefato revisável.
+
+**Estado atual confirmado**: produção roda `casagora/router-api:0.9.325-fase1a-incremento3-
+login-refresh-20260721` — **anterior** a qualquer mudança desta sessão (`server.js`/
+`Dockerfile` só existem no branch `main` do repo, nenhuma imagem nova foi buildada).
+
+### Passo 1 — build da imagem nova (só depois de aprovado, inclui `rclone`)
+
+```bash
+cd /opt/repos/casagora-router
+docker build \
+  --build-arg APP_VERSION=0.9.326-nocrm-import \
+  --build-arg GIT_SHA=$(git rev-parse --short HEAD) \
+  -t casagora/router-api:0.9.326-nocrm-import .
+```
+
+### Passo 2 — montar a credencial R2 (bind mount read-only, mesmo path que o job de extração já usa)
+
+```bash
+docker service update \
+  --mount-add type=bind,source=/root/.config/rclone,destination=/root/.config/rclone,readonly=true \
+  --image casagora/router-api:0.9.326-nocrm-import \
+  --force \
+  casagora_router_api
+```
+
+`R2_REMOTE`/`R2_BUCKET` não precisam de env var nova — os defaults no código (`r2`/`arkontech`)
+já batem com o remote usado pelo backup diário e pelo job de extração.
+
+### Passo 3 — verificação
+
+```bash
+CONTAINER=$(docker ps --filter name=casagora_router_api -q | head -1)
+docker exec $CONTAINER rclone lsd r2:arkontech --max-depth 1   # confirma que a credencial monta e funciona de dentro do container
+docker inspect $CONTAINER --format '{{.Image}}' | cut -c8-20   # confirma que a imagem nova subiu
+```
+
+Só depois disso um `deal_attachments` com `storage_backend='r2'` conseguiria ser baixado de
+verdade em produção — sem isso, o endpoint responde 500 (`rclone` ausente/sem credencial).
 
 **Esforço total estimado: pequeno (~1-2h), só o ícone/rótulo de comentário — tudo o mais já
 funciona sem tocar em frontend.**
