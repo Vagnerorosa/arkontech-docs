@@ -6,14 +6,33 @@
 
 ---
 
+## Versão resumida (WhatsApp)
+
+> Cole direto no grupo da equipe. O documento completo abaixo fica como referência/anexo se
+> alguém quiser mais detalhe.
+
+```
+📋 Aviso: chegada dos leads antigos da noCRM
+
+Nos próximos dias, cerca de 4.128 leads que hoje só existem na noCRM vão
+aparecer como cards no nosso sistema, cada um na coluna certa do Kanban.
+
+Cada card chega para o dono certo, com o histórico de conversas já dentro
+dele. Os leads e negociações que vocês já trabalham hoje NÃO mudam em nada.
+
+Se algum card aparecer estranho (dono errado, faltando informação), não
+mexe/apaga — chama o Vagner. Detalhes completos no documento anexo.
+```
+
 ## O que vai acontecer
 
 No dia do import, **4.128 leads que hoje só existem na noCRM vão aparecer como cards no
-Kanban do nosso sistema** (Imoviz/Casagora), com todo o histórico de conversas e documentos
-já dentro de cada card — vocês não vão precisar copiar nada manualmente.
+Kanban do nosso sistema** (Imoviz/Casagora), já com o histórico de conversas dentro de cada
+card (os anexos chegam nos dias seguintes, ver detalhe abaixo) — vocês não vão precisar
+copiar nada manualmente.
 
-Isso é a "virada de chave" combinada há semanas: a noCRM vai deixar de ser o lugar onde a
-gente trabalha o dia a dia, e o nosso sistema passa a ter tudo.
+Isso faz parte da migração da noCRM para o nosso sistema, que está em andamento: aos poucos
+o nosso sistema passa a ter tudo o que hoje está espalhado entre os dois lugares.
 
 ## Quantos cards e em quais colunas
 
@@ -91,8 +110,11 @@ Nenhum card ficou "sem dono" — todos os 4.128 foram identificados.
 ## O que muda no dia a dia de vocês
 
 - Vão aparecer cards novos nas suas colunas — cada um já com o **histórico de comentários**
-  (o que foi conversado com o cliente na noCRM) e os **anexos** (documentos, contratos, etc.)
-  que já existiam.
+  (o que foi conversado com o cliente na noCRM) dentro dele.
+- Os **anexos** (documentos, contratos, fotos, etc.) de cada card chegam **nos dias seguintes**
+  ao import, não no mesmo momento dos cards — é um processo separado, mais lento por
+  natureza. Se um card aparecer sem anexo nos primeiros dias, é normal, o arquivo está a
+  caminho — não precisa reportar como problema, só aguardar.
 - A partir do import, o trabalho com esses leads passa a ser 100% aqui no sistema — não
   precisa mais voltar na noCRM para consultar nada deles.
 
