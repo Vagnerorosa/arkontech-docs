@@ -15,6 +15,94 @@
 > do `segredos-relatorio.md`. Onde um comando precisa do valor, ele é
 > descrito como placeholder (`<NOVA_SENHA>`, `<NOVO_TOKEN>` etc.) para ser
 > preenchido na hora, na sessão de execução, nunca commitado.
+>
+> **Atualizado em 23/07/2026** — incidente de segredos expostos no
+> transcript de uma sessão motivou rotação de emergência de 4 tokens de
+> API (Seção 4, nova) + preparo da rotação de `JWT_SECRET` (Seção 5, nova)
+> + reforço da Seção 1 (Postgres, item pendente da varredura de 22/07
+> ainda em aberto). Ver `## 0. Incidente` para a causa raiz e a regra nova
+> de leitura segura de segredo — **leia antes de rodar qualquer comando
+> que toque em segredo neste servidor**.
+
+## 0. Incidente (23/07/2026) — segredos expostos em texto puro no transcript
+
+### O que aconteceu
+
+Durante uma sessão de auditoria (não relacionada a rotação), um comando
+rodado para inspecionar as env vars do serviço `casagora_router_api`
+tentou mascarar os valores sensíveis antes de exibir o resultado, mas a
+máscara **não bateu com o formato real da saída** — o comando imprimiu
+`JWT_SECRET`, `ADMIN_TOKEN`, `NOCRM_API_KEY`, `NOCRM_WEBHOOK_TOKEN`,
+`FACEBOOK_ACCESS_TOKEN`, `FACEBOOK_APP_SECRET`, `EVOLUTION_API_KEY`,
+`RESEND_API_KEY`, `TURNSTILE_SECRET`, `TURNSTILE_SECRET_WEBCHAT`,
+`SMTP_PASS`, `CHAVES_IMAP_PASS` e a senha do Postgres em texto puro no
+transcript da conversa.
+
+### Causa raiz confirmada (não suposição — testado)
+
+O comando usado foi da forma:
+```bash
+docker service inspect <serviço> --format '{{json .Spec.TaskTemplate.ContainerSpec.Env}}' \
+  | python3 -m json.tool \
+  | sed -E 's/("CHAVE"|...)(: ")[^"]*/\1\2***/'
+```
+`docker service inspect --format '{{json ...ContainerSpec.Env}}'` retorna
+uma **lista JSON de strings no formato `"CHAVE=valor"`** (confirmado por
+teste: `type([...])` é `list`, cada elemento contém `=`), **não** um
+objeto `{"CHAVE": "valor"}`. O regex de máscara foi escrito assumindo o
+formato de objeto (procura o padrão `"CHAVE": "` — dois-pontos, espaço,
+aspas — antes do valor, pra saber onde cortar). Nesse formato de lista,
+esse padrão **nunca aparece** (é só `"CHAVE=valor",` — sinal de igual,
+sem dois-pontos) — o regex não casa nada, nada é mascarado, e o
+`json.tool` já tinha pretty-printed cada `CHAVE=valor` em uma linha
+própria, pronta pra vazar inteira.
+
+### Regra nova — ler segredo sem imprimir, não mascarar depois de imprimir
+
+**Mascarar depois de gerar o output é frágil por construção** — qualquer
+divergência de formato (lista vs. objeto, aspas simples vs. duplas,
+quebra de linha inesperada) faz a máscara silenciosamente não bater, e o
+valor sai em texto puro sem nenhum aviso de que a máscara falhou. A partir
+desta rotação, a prática neste projeto passa a ser:
+
+1. **Nunca formatar `.Env`/env dumps inteiros para exibição.** Se só
+   precisa saber *se* uma variável existe ou comparar nomes, filtrar por
+   **nome**, nunca por valor:
+   ```bash
+   docker service inspect <serviço> --format '{{range .Spec.TaskTemplate.ContainerSpec.Env}}{{println .}}{{end}}' \
+     | cut -d= -f1 | sort   # só os NOMES, nunca o valor depois do "="
+   ```
+2. **Se precisa do valor pra usar em outro comando** (ex.: montar uma nova
+   `DATABASE_URL`, assinar algo), extrair pra uma variável de shell **sem
+   nunca imprimir** — nem em texto puro, nem "mascarado":
+   ```bash
+   VAL=$(docker service inspect <serviço> --format '{{range .Spec.TaskTemplate.ContainerSpec.Env}}{{println .}}{{end}}' | grep '^CHAVE=' | cut -d= -f2-)
+   # usar $VAL diretamente no próximo comando, nunca com echo/print/cat no meio
+   ```
+3. **Se realmente precisa confirmar visualmente que um valor está
+   correto** (comparar com o que está no gerenciador de credenciais, por
+   exemplo), mostrar só um prefixo/sufixo curto (ex. 4 caracteres) ou o
+   tamanho da string — nunca o valor inteiro:
+   ```bash
+   echo "tamanho: ${#VAL} chars, prefixo: ${VAL:0:4}..."
+   ```
+4. **Comandos que despejam env inteiro em stdout são proibidos por
+   padrão** neste tipo de investigação — `docker inspect`/`docker service
+   inspect --format '{{json .Spec...Env}}'` sem filtro, `env`, `printenv`
+   sem grep por nome, `cat /etc/*.env` sem grep por nome. Se a ferramenta
+   que gerou o comando (humana ou IA) sentir necessidade de "mascarar
+   depois", isso já é o sinal de que devia ter filtrado por nome **antes**
+   de gerar output, não depois.
+
+### Consequência prática desta sessão
+
+Como o transcript já continha os valores em texto puro (não é possível
+"apagar" isso retroativamente de uma conversa já ocorrida), a decisão foi
+tratar como incidente real e rotacionar as credenciais afetadas — ver
+Seções 1, 4 e 5. Nenhum uso indevido identificado nos valores expostos
+antes da rotação.
+
+---
 
 ## Antes de rodar qualquer seção
 
@@ -27,6 +115,15 @@ lista se muito tempo tiver passado.
 ---
 
 ## 1. Senha do Postgres (usuário `arkontech`)
+
+> **Nota 23/07/2026**: a próxima execução desta seção deve incluir o item
+> pendente da varredura de 22/07 (ver `## Histórico de execução`) — a
+> spec do próprio serviço Swarm `arkontech_postgres` (env
+> `POSTGRES_PASSWORD`, usada só como bootstrap se o volume for recriado do
+> zero) ainda está com a senha **anterior a 19/07** (nem a senha rotacionada
+> em 19/07 chegou a ser aplicada ali). Não é risco operacional ativo, mas
+> é gap de disaster recovery — incluir na mesma janela desta vez, não
+> adiar de novo. Comando já pronto na nota do Histórico de 22/07.
 
 ### Achado crítico que muda o escopo do que o `segredos-relatorio.md` presumia
 
@@ -346,6 +443,235 @@ permissão `600`, não valor direto no crontab).
    `docker service update --env-add` (não EasyPanel, ver correção acima)
    para o valor antigo E o crontab para o header antigo, juntos (os dois
    lados precisam bater, não é um par com grace period como o Turnstile).
+
+---
+
+## 4. Tokens de API (Facebook, noCRM, Evolution, Resend) — 23/07/2026
+
+> Motivada pelo incidente da Seção 0. **Rotaciona sem derrubar sessão de
+> usuário nenhuma e sem restart de banco** — os 4 tokens são lidos por
+> processo (não por conexão persistente com handshake), então um
+> `docker service update --env-add` troca o valor e o próximo request já
+> usa o novo, sem downtime perceptível. Descoberta de consumidores feita
+> em 23/07/2026 pelo método corrigido da Seção 1 (busca exaustiva, não só
+> "quem eu acho que usa isso") — grep por nome de variável em **todos** os
+> serviços Swarm + `/etc` inteiro + crontabs + `/root` (scripts soltos) +
+> unit files do systemd.
+
+### 4.1 Onde gerar cada um (o painel que você acessa)
+
+| Credencial | Painel | Observação |
+|---|---|---|
+| `FACEBOOK_ACCESS_TOKEN` | [Meta for Developers](https://developers.facebook.com/) → app `FACEBOOK_APP_ID` → ferramenta de geração de token (Graph API Explorer ou, se o token atual for de **System User**, Business Settings → System Users → gerar novo token para o mesmo usuário/permissões) | **Preciso que confirme**: o token atual é de um usuário do sistema (System User, recomendado — não expira por login) ou de um usuário comum exportado como long-lived (expira em ~60 dias, precisa ser trocado periodicamente)? Não há registro em `arkontech-docs` de qual dos dois foi usado originalmente — gere mantendo o mesmo tipo pra não mudar o comportamento de expiração |
+| `NOCRM_API_KEY` | painel do noCRM (`https://casagora.nocrm.io`, `NOCRM_SUBDOMAIN=casagora`) → Configurações/Integrações → API | Confirmar que o novo key tem o mesmo escopo de acesso do atual (leitura+escrita de leads/comentários/anexos) |
+| `RESEND_API_KEY` | [resend.com](https://resend.com/) → API Keys | Recomendo criar a nova ANTES de revogar a antiga (Resend permite múltiplas chaves ativas simultaneamente) — evita janela sem envio de e-mail |
+| `EVOLUTION_API_KEY` | **Não tem painel externo** — ver 4.2, é diferente dos outros 3 |
+
+### 4.2 Evolution — caso à parte, ler antes de rotacionar
+
+**Achado importante desta descoberta**: `EVOLUTION_API_KEY` (env
+`AUTHENTICATION_API_KEY` no serviço `agenciadeia_evolution-api`) **não é
+uma credencial de terceiro** — é uma chave global que o **nosso próprio**
+servidor Evolution usa pra autenticar qualquer chamada de API contra
+qualquer instância que ele hospeda. O nome do serviço
+(`agenciadeia_evolution-api`) sugere que essa instância é **compartilhada
+por mais projetos além da Casagora** (o Swarm também tem
+`agenciadeia_n8n` rodando ao lado, mesmo prefixo) — não confirmado com
+certeza que outros projetos a usam hoje, mas o grep por nome de variável
+só alcança consumidores que guardam a chave em env var visível; se algum
+workflow do `agenciadeia_n8n` guarda a chave nas próprias credenciais
+internas (banco do n8n, não env var), esse grep **não alcança** e a
+rotação quebraria aquele workflow sem aviso.
+
+**Recomendação**: antes de rotacionar,
+1. Confirmar com quem administra o `agenciadeia_n8n`/outros projetos
+   deste Swarm se algum deles chama a Evolution API com esta mesma chave
+   (não dá pra confirmar só por grep de arquivo).
+2. Se confirmado que só o `casagora_router_api` e o job de extração usam
+   essa chave, a rotação é simples: gerar um valor novo (`openssl rand
+   -hex 32`, mesmo padrão do token do Carhauler na Seção 3) e aplicar nos
+   3 lugares (Evolution + 2 consumidores, ver 4.3).
+3. Se não der pra confirmar com segurança, ou quiser algo com escopo
+   menor: Evolution API v2 suporta **token por instância** além do
+   global — perguntar/confirmar se `EVOLUTION_INSTANCE=Sistema Casagora`
+   já tem (ou pode ganhar) um token próprio, isolado dos outros projetos,
+   em vez de rotacionar a chave `AUTHENTICATION_API_KEY` global.
+
+**Ficou pendente de decisão sua** — não vou gerar/aplicar o valor da
+Evolution até confirmar o escopo (global vs. por-instância) e o impacto
+nos outros consumidores do Swarm.
+
+### 4.3 Consumidores confirmados (grep exaustivo, 23/07/2026)
+
+**Ativos (precisam do valor novo pra continuar funcionando):**
+
+| Consumidor | Como recebe | `FACEBOOK_ACCESS_TOKEN` | `NOCRM_API_KEY` | `EVOLUTION_API_KEY` | `RESEND_API_KEY` |
+|---|---|---|---|---|---|
+| `casagora_router_api` (serviço Swarm) | `docker service update --env-add` (não é EasyPanel — mesmo achado da Seção 1) | ✓ | ✓ | ✓ | ✓ |
+| `/etc/nocrm-extraction.env` (`EnvironmentFile` dos jobs `nocrm-extraction-comments/attachments.service`) | editar arquivo direto (permissão `600`, já correta) | — | ✓ | ✓ | ✓ |
+
+**Residual — achado nesta varredura, NÃO estava documentado antes (mesmo
+padrão da varredura de 22/07 pro Postgres):**
+
+| Arquivo | Problema | O que tem |
+|---|---|---|
+| `/etc/casagora-router.secrets.env` | Órfão (datado de 07/02, meses antes de qualquer commit relevante — nada no host/repos referencia esse caminho hoje) **e com permissão `644`** (mundo pode ler, diferente do padrão `600` do resto da VPS) | `FACEBOOK_ACCESS_TOKEN`, `FACEBOOK_APP_SECRET`, `FACEBOOK_VERIFY_TOKEN`, `NOCRM_API_KEY`, `EVOLUTION_API_KEY`, `ADMIN_TOKEN` — valores antigos, possivelmente já defasados de rotações anteriores, mas ainda legíveis por qualquer usuário do sistema |
+| `/root/scripts/reprocess_lead.mjs` | Fallback hardcoded (`process.env.NOCRM_API_KEY \|\| '<valor antigo>'`, mesmo padrão já visto com a senha do Postgres em 22/07) | `NOCRM_API_KEY`, `EVOLUTION_API_KEY` |
+| `/root/scripts/reprocess_batch.mjs` | Mesmo padrão de fallback hardcoded | `NOCRM_API_KEY`, `EVOLUTION_API_KEY` |
+| `/root/scripts/recover_leads_2026_05_13.mjs` | Valor hardcoded direto (sem `process.env`, nem fallback — a constante É o valor) | `FACEBOOK_ACCESS_TOKEN`, `NOCRM_API_KEY` |
+| `/root/scripts/reprocess_unrouted_batch_20260524.mjs` | Valor hardcoded direto (mesmo padrão) | `NOCRM_API_KEY`, `EVOLUTION_API_KEY` |
+
+**Confirmado seguro (só lê de `process.env`, sem fallback nem valor
+hardcoded)**: `mystery_shopper_interactive.js`, `mystery_shopper_leads.js`,
+`mystery_shopper_leads_2026_06_11.js`, `mystery_shopper_test.js` — usam
+`process.env.NOCRM_API_KEY`/`process.env.EVOLUTION_API_KEY` normalmente,
+nenhuma ação necessária além de continuarem funcionando com o valor novo
+(já pegam do ambiente na hora de rodar).
+
+**Fora de escopo, confirmado isolado**: `painel-trafego` (projeto
+Mapaapolar/Apolar, `/opt/painel-trafego/clientes/apolar/config.json`) tem
+seu próprio token de Meta, em arquivo de config separado por cliente —
+não referencia nenhuma das env vars acima, cliente diferente, app Meta
+provavelmente diferente. Não tocado.
+
+### 4.4 Passos (por credencial, depois de ter o valor novo em mãos)
+
+1. Cole o valor novo num arquivo temporário na VPS, nunca no chat:
+   ```bash
+   install -m 600 /dev/null /root/secrets/rotation-20260723/facebook_access_token.txt
+   nano /root/secrets/rotation-20260723/facebook_access_token.txt   # cole o valor, salve
+   ```
+   Repita para cada credencial (`nocrm_api_key.txt`, `resend_api_key.txt`,
+   e `evolution_api_key.txt` se/quando decidido).
+2. Aplicar no serviço Swarm (sem imprimir o valor no terminal):
+   ```bash
+   docker service update --env-add "FACEBOOK_ACCESS_TOKEN=$(cat /root/secrets/rotation-20260723/facebook_access_token.txt)" casagora_router_api
+   docker service ps casagora_router_api --no-trunc | head -5   # confirma saudável antes do próximo
+   ```
+   Repetir pra `NOCRM_API_KEY`/`RESEND_API_KEY` (e `EVOLUTION_API_KEY` se
+   decidido) — um `--env-add` por vez, confirmando saúde entre cada um.
+3. Atualizar `/etc/nocrm-extraction.env` (editor direto, arquivo já
+   `600`) pros 3 valores que ele guarda (`NOCRM_API_KEY`,
+   `EVOLUTION_API_KEY`, `RESEND_API_KEY`).
+4. Corrigir o residual (mesmo espírito da correção do Postgres em 22/07 —
+   mais barato corrigir do que confiar que "ninguém lê isso"):
+   - `/etc/casagora-router.secrets.env`: atualizar os valores E corrigir a
+     permissão pra `600` (`chmod 600`) — ou, se realmente não é usado por
+     nada (confirmar antes com mais uma rodada de busca), apagar.
+   - Os 4 scripts em `/root/scripts/`: trocar o valor hardcoded/fallback
+     pelo novo, ou (melhor, já que são scripts de recuperação de
+     incidentes antigos de maio/2026, prováveis de não rodar de novo)
+     remover o hardcode e exigir só `process.env`, deixando de funcionar
+     sem a env setada explicitamente — mais seguro que carregar segredo
+     morto no disco indefinidamente.
+5. Validação:
+   - Facebook: `GET /admin/report/leads` ou próximo lead do roteador
+     processando sem erro `190`/`OAuthException` nos logs.
+   - noCRM: próximo sync (`nocrm-sync` scheduled) ou chamada manual a
+     `/admin/sync/nocrm/leads` sem erro `401`.
+   - Resend: `node scripts/nocrm-extraction-job.js test-alert` (dispara
+     o canal real de alerta, já usado antes nesta mesma investigação).
+   - Evolution (se rotacionado): próxima notificação de WhatsApp de lead
+     novo saindo sem erro nos logs do `casagora_router_api`.
+6. Apagar `/root/secrets/rotation-20260723/` (`shred -u -z`) só depois de
+   validado tudo e você ter salvo os valores no gerenciador de
+   credenciais — mesmo procedimento de 19/07.
+
+---
+
+## 5. `JWT_SECRET` (sessão de login) — preparado, EXECUÇÃO PENDENTE DE JANELA
+
+> **Não executar sem OK explícito de janela do Vagner.** Seções abaixo
+> preparam o procedimento. **Correção importante feita durante o preparo
+> (23/07/2026)**: a 1ª versão desta seção presumia "consumidor único" e
+> concluía que o impacto real era pequeno — **as duas coisas estavam
+> erradas**, corrigido em 5.1/5.2 abaixo com evidência de código, não
+> suposição. A cautela original do Vagner ("desloga todos, janela de
+> madrugada") era a leitura mais segura desde o início.
+
+### 5.1 NÃO é consumidor único — o frontend guarda uma cópia do mesmo segredo
+
+Descoberta ao rerrodar o grep exaustivo (mesmo método da Seção 4) **por
+nome de variável em todos os serviços Swarm**, não só nos que pareciam
+óbvios: `JWT_SECRET` existe em **4 lugares**, não 1:
+
+| Onde | Por quê |
+|---|---|
+| `casagora_router_api` | emite e revalida o access token (`jwt.sign`/`jwt.verify`, `src/server.js`) |
+| `imoviz_frontend` | **verifica a assinatura do JWT localmente**, sem chamar o backend — `frontend/src/middleware.ts` importa `jwtVerify` da lib `jose` e chama `jwtVerify(token, JWT_SECRET)` a cada navegação (linhas 95 e 111). **Precisa ser byte-idêntico ao do backend** — não é uma cópia de conveniência, é parte do desenho (o middleware do Next.js decide sozinho, sem round-trip à API, se o token é válido) |
+| `arkontech_api` | app **completamente diferente** (painel admin/superadmin da Arkontech, não Imoviz/Casagora) — quase certamente um valor independente só compartilhando o nome genérico da env var; **não confirmado que seja o mesmo valor** (não dá pra comparar sem imprimir os dois) — tratar como secret separado, **não tocar** nesta rotação a menos que confirmado o contrário |
+| `arkontech_postgres` | **residual, sem uso** — o container oficial do Postgres não lê essa env var pra nada; presença ali é resíduo de configuração (mesma categoria dos achados da varredura de 22/07), não um consumidor real |
+| `/etc/arkontech/.env` | arquivo órfão já identificado na varredura de 22/07 (ver Seção 1) — tem uma cópia antiga também |
+
+### 5.2 Impacto real corrigido: janela de mismatch causa logout real, não é "sem efeito"
+
+Lido o fluxo completo do middleware (`frontend/src/middleware.ts` linhas
+93-126): quando a verificação do access token falha (assinatura
+inválida), o código tenta renovar via refresh token — **mas a renovação
+só é aceita se o token novo, emitido pelo backend, também verificar
+localmente contra a cópia do `JWT_SECRET` do PRÓPRIO frontend** (linha
+111: `jwtVerify(rotated.accessToken, JWT_SECRET)`). Se essa segunda
+verificação falhar, o código **não tenta de novo** — cai direto em
+"sessão inválida", apaga os 3 cookies (`imoviz_token`, `imoviz_refresh`,
+`imoviz_user`) e redireciona pro login (linhas 119-126).
+
+Ou seja: se o backend (`casagora_router_api`) já estiver com o
+`JWT_SECRET` novo e o frontend (`imoviz_frontend`) ainda com o antigo (ou
+vice-versa) no momento em que um usuário navega, a renovação silenciosa
+**falha e a pessoa é deslogada de verdade** — a suposição original do
+Vagner era a correta. A única forma de manter o impacto mínimo é os dois
+serviços trocarem o valor **o mais simultâneo possível** (mesma lógica de
+"sequência rápida" já usada na Seção 1 pro Postgres com 4 consumidores) —
+mesmo assim, alguém navegando exatamente na janela entre um `docker
+service update` e o outro convergir (tipicamente alguns segundos) tem
+chance real de cair pro login. Não tem como zerar essa janela por
+completo com o mecanismo atual (só eliminando de vez com um desenho de
+múltiplos secrets válidos simultaneamente, fora de escopo desta rotação).
+
+**Quem não é afetado**: sessão de **superadmin** (`cg_session`, hash em
+`app_sessions`, não usa `JWT_SECRET`) e `arkontech_api`/`arkontech_postgres`
+(consumidor separado/residual, ver 5.1) — só o par
+`casagora_router_api`+`imoviz_frontend` (login do Imoviz/CRM) sente o
+impacto.
+
+**Recomendação**: mantém a cautela original — janela de madrugada/baixo
+uso, aviso prévio à equipe se possível ("pode precisar logar de novo uma
+vez hoje de madrugada"), e os dois serviços atualizados em sequência tão
+rápida quanto der (script único que faz os dois `--env-add` de seguida,
+não dois comandos manuais separados por tempo de digitação).
+
+### 5.3 Procedimento (quando a janela for aprovada)
+
+1. Gerar o valor novo:
+   ```bash
+   openssl rand -hex 48
+   ```
+2. Salvar em arquivo temporário (`/root/secrets/rotation-<data>/jwt_secret.txt`,
+   `600`), nunca no chat.
+3. Aplicar nos **dois serviços em sequência imediata** (idealmente um
+   script só, não dois comandos digitados separadamente):
+   ```bash
+   VAL=$(cat /root/secrets/rotation-<data>/jwt_secret.txt)
+   docker service update --env-add "JWT_SECRET=$VAL" casagora_router_api
+   docker service update --env-add "JWT_SECRET=$VAL" imoviz_frontend
+   docker service ps casagora_router_api --no-trunc | head -5
+   docker service ps imoviz_frontend --no-trunc | head -5
+   ```
+4. Corrigir a cópia órfã em `/etc/arkontech/.env` e a residual (sem uso
+   real, mas mais barato corrigir) em `arkontech_postgres`, mesmo
+   procedimento da nota da Seção 1.
+5. **Validação imediata, antes de considerar concluído**:
+   - Login novo (usuário de teste) — confirma que o backend emite e o
+     frontend aceita o token com o secret novo.
+   - Testar **um usuário já logado antes da troca**: aba já autenticada,
+     navegar pra outra página logo após a troca — esse é o teste que
+     mostra se a janela de mismatch pegou alguém ou não.
+   - Monitorar logs do `imoviz_frontend`/`casagora_router_api` por um
+     pico breve de redirecionamento pro login nos minutos ao redor da
+     troca — esperado um pico pequeno, não zero.
+6. **Rollback**: mesmo padrão — os dois serviços de volta pro valor
+   antigo, em sequência imediata. Sem período de graça (diferente do
+   Turnstile).
 
 ---
 
