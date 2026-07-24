@@ -1134,3 +1134,61 @@ esquecer, nenhuma bloqueante do dia a dia):
   aguardando a mesma janela (Seção 1).
 - Token do Facebook expira 22/09/2026 (achado acima) — reavaliar antes
   dessa data, ou regenerar já marcando "Never" se preferir resolver antes.
+
+### 24/07/2026 — janela de manutenção: JWT_SECRET + P7 + Postgres (arkontech + Evolution)
+
+Ordem executada: build da imagem com fix P7 → deploy JWT_SECRET+P7 (usuário
+logado antes, confirmou sessão sobreviveu) → Postgres `arkontech` (rotação
+completa da senha do role, não só o gap de DR — decisão consciente, ver
+abaixo) → retomada do job de anexos → Postgres do Evolution API
+(`agenciadeia_evolution-api-db`, sub-bloco extra, ver nota) → validação final.
+
+**JWT_SECRET + P7**: imagem `casagora/router-api:0.9.328-p7-pool-error-handler`
+(commit `68f08be`) + segredo novo aplicados em `casagora_router_api` e
+`imoviz_frontend` em sequência imediata. Sessão já aberta do Vagner
+sobreviveu sem precisar relogar — confirma a renovação silenciosa
+funcionando (Seção 5.1).
+
+**Postgres `arkontech` — rotação completa, não só o gap de DR**: decisão do
+Vagner (a senha atual também tinha vazado no mesmo incidente de segredos
+expostos) — rotacionar de verdade já que o banco reiniciaria de qualquer
+jeito para aplicar a spec de bootstrap. 4 serviços Swarm + spec do
+`arkontech_postgres` + `/etc/casagora-db-backup.env` + `/etc/nocrm-extraction.env`
++ `/etc/casagora-router.env` + `/etc/arkontech/.env` (órfão) + os 4 scripts
+de recuperação em `/root/scripts/` — todos atualizados. Validado: golden
+master (47/47 sem mudança), backup manual (upload R2 ok), os 4 serviços
+saudáveis. **Efeito colateral esperado, autolimitado**: o Chaves na Mão e o
+`queue-reconcile` alertaram por WhatsApp um erro `28P01` de ~1-2s — o
+container antigo do `casagora_router_api` ainda vivo na janela entre
+`ALTER USER` e sua própria atualização de env. Auto-recuperado no tick
+seguinte, nenhum dado perdido — é a "janela de risco" já documentada na
+Seção 1, não um bug novo.
+
+**Postgres do Evolution (`agenciadeia_evolution-api-db`) — sub-bloco extra**:
+motivado por um vazamento **novo, cometido nesta mesma sessão** (ver nota
+de regra permanente abaixo) — a senha desse banco (instância separada,
+não relacionada ao `arkontech_postgres`) apareceu em texto puro ao tentar
+confirmar que ele era isolado. Mapeamento exaustivo confirmou só 2
+consumidores (`agenciadeia_evolution-api` + a spec de bootstrap do próprio
+banco) — sem residuo em host/scripts/crontabs. Rotacionado (role
+`postgres`, banco `agenciadeia`) e validado: Evolution API reconectou
+("CONNECTED TO WHATSAPP"), voltou a enviar mensagem real em produção. Um
+restart transitório do container (esperado, mesma categoria da janela de
+risco acima).
+
+**P7 validado de verdade**: nenhum dos 4 serviços entrou em crash-loop
+durante o restart real do `arkontech_postgres` — ver D18 em `DECISOES.md`.
+
+**Regra permanente (reforço 24/07/2026)**: durante esta mesma janela, uma
+tentativa de **mascarar a connection string do Evolution DB depois de
+gerar o output** falhou de novo (regex esperava `postgresql://`, a string
+real é `postgres://`) e expôs a senha em texto puro — a MESMA categoria de
+erro da Seção 0, cometida de novo apesar da regra já estar escrita.
+**Conclusão prática**: a regra "filtrar por nome antes, nunca mascarar
+depois" não é negociável nem para uma checagem rápida/pontual — não existe
+"só dessa vez, é rápido". A partir de agora, qualquer comando que monte uma
+connection string/URL com credencial embutida para exibição é tratado como
+proibido por padrão, mesmo com tentativa de mascaramento; extrair pra
+variável de shell (nunca `print`/`echo`) e comparar por tamanho/prefixo
+curto quando precisar confirmar visualmente é o único padrão aceito daqui
+pra frente.

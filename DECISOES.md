@@ -41,28 +41,52 @@ geral. Hardening interino a avaliar (nenhum implementado ainda):
   viável — o P4 garante que `req.ip` é confiável).
 Sem prazo definido — decisão do Vagner.
 
-### P7 — `casagora_router_api` sem `pool.on('error', ...)` no client do Postgres
-Achado em 22/07/2026, durante a varredura de resíduos da rotação de
-credenciais (`crm/rotacao-credenciais.md`, seção "22/07/2026"). O `pool`
-do `pg` em `src/server.js` (`new Pool({ connectionString: DATABASE_URL
-})`, linha ~297) não registra um handler de `error` — pela documentação
-do `node-postgres`, um client ocioso que perde a conexão (ex.: o
-Postgres reinicia) emite `error` no pool em vez de só falhar a query em
-andamento; sem listener, esse evento vira exceção não tratada e derruba
-o processo Node inteiro. Não achado por acidente de produção: veio à
-tona ao planejar um `docker service update` no `arkontech_postgres`
-(ainda não executado, ver runbook) e perceber que o processo cairia
-numa reconexão em vez de se recuperar sozinho.
-**Mitigação hoje**: o Swarm tem `RestartPolicy: {Condition: "any",
-MaxAttempts: 0}` no serviço — se o processo cair, volta em ~5s sozinho.
-Cobre o sintoma (indisponibilidade breve, autolimitada), não a causa.
-**Não verificado** se `arkontech_api`/`carhauler_app`/
-`carhauler_app_canary` têm o mesmo padrão (código não está clonado
-neste ambiente) — mesma varredura vale a pena nesses repos.
-Correção é pequena (registrar `pool.on('error', err => console.error(...))`
-logo após `new Pool(...)`) — candidato a PR de robustez, sem prazo,
-possivelmente junto da Fase 2/4 (`ROADMAP.md`) ou isolado como hardening
-pontual. Nenhuma mudança de código feita ainda.
+### P7 (RESOLVIDO 24/07/2026, ver D18)
+
+### P8 — `imoviz_frontend` guarda cópia do `JWT_SECRET` (HS256 simétrico) — migrar pra RS256/ES256
+Achado em 24/07/2026, durante a rotação de emergência do `JWT_SECRET`
+(incidente de segredos expostos, `crm/rotacao-credenciais.md` Seção 5).
+O backend (`casagora_router_api`) assina o access token com **HS256**
+(`jwt.sign(user, JWT_SECRET, ...)`, sem `algorithm` explícito — default
+do `jsonwebtoken` quando o secret é string simples é HMAC simétrico).
+HS256 usa **o mesmo segredo pra assinar E verificar** — o
+`imoviz_frontend` precisa da cópia exata pra verificar localmente no
+`middleware.ts` (`jose`/`jwtVerify`, evita round-trip ao backend em toda
+navegação).
+**Risco real**: com segredo simétrico compartilhado, qualquer lugar que
+tenha o `JWT_SECRET` pode tanto verificar quanto **forjar** um token
+válido. Se o `imoviz_frontend` for comprometido algum dia (vulnerabilidade
+de dependência, acesso ao container), quem tiver o segredo pode forjar
+um JWT como **qualquer usuário, incluindo SUPERADMIN** — não é só
+"ler", é "assinar". Reduziria diretamente o impacto do tipo de incidente
+que motivou a rotação de 23-24/07/2026.
+**Correção proposta**: migrar de HS256 (simétrico) pra **RS256 ou ES256**
+(par de chaves assimétrico) — o backend passa a guardar só a **chave
+privada** (assina/emite), o frontend guarda só a **chave pública**
+(verifica, não pode forjar nada; chave pública não é segredo). Se o
+frontend for comprometido, o dano cai de "personificação total" pra
+"nada" (só consegue ler tokens já assinados por outra parte, nunca criar
+um novo).
+**Esforço estimado**: médio, ~2-3 dias —
+1. Gerar par de chaves (RSA 2048+ ou EC P-256), ~meio dia.
+2. Backend: trocar `jwt.sign(payload, JWT_SECRET, ...)` por
+   `jwt.sign(payload, privateKey, { algorithm: 'RS256'/'ES256', ... })`
+   em todos os pontos de emissão (login, refresh — 4 ocorrências
+   identificadas em `src/server.js`), ~meio dia.
+3. Frontend: trocar `jwtVerify(token, JWT_SECRET)` (secret simétrico,
+   `TextEncoder`) por `jwtVerify(token, publicKey)` (formato de chave
+   pública que a lib `jose` espera — `importSPKI` ou JWK), ~meio dia.
+4. **Rollout coordenado** (mesmo cuidado da rotação simétrica atual,
+   seção 5 do runbook): durante a transição, tokens antigos (HS256)
+   emitidos antes do deploy ainda circulam por até 15min (vida do access
+   token) — período de compatibilidade ou aceitar que uma pequena janela
+   de usuários precise relogar, ~meio dia de teste/validação.
+5. Atualizar `crm/rotacao-credenciais.md` Seção 5 (deixa de existir o
+   problema de "trocar os dois lados quase simultâneo" — rotacionar a
+   chave privada no backend não exige tocar o frontend se a chave
+   pública não mudar).
+Sem prazo definido — prioridade ALTA no backlog de segurança (reduz o
+impacto exato do incidente de 23-24/07/2026), não implementado ainda.
 
 ## ✅ Tomadas
 
@@ -276,3 +300,18 @@ a virada geral fica sem data até o piloto validar. Pré-requisito direto:
 a auditoria do fluxo diário do corretor (`crm/fase1b-auditoria-fluxo-corretor.md`,
 23/07/2026) — é o que embasa se o Imoviz já está pronto pra receber os
 corretores-piloto ou se faltam telas/fluxos antes disso.
+
+### D18 — P7 resolvido: `pool.on('error', ...)` registrado no client do Postgres (24/07/2026)
+Fix de 1 linha em `src/server.js` (commit `68f08be`, `casagora-router`):
+logo após `new Pool(...)`, um handler que loga o erro em vez de deixar
+virar exceção não tratada. Deployado junto com a rotação de `JWT_SECRET`
+(mesma janela de manutenção) e testado de verdade no restart real do
+`arkontech_postgres` (rotação completa da senha do role `arkontech`,
+mesma janela) — os 4 serviços dependentes reconectaram sozinhos sem
+crash-loop. Único efeito colateral observado (esperado, documentado):
+containers ainda com a env antiga tiveram ~1-2s de erro `28P01` na
+janela entre `ALTER USER` e a atualização de cada consumidor (Chaves na
+Mão/queue-reconcile alertaram, auto-recuperado no próximo tick) — não é
+o cenário que o P7 corrige (isso é a fila de deploy do Swarm, não um
+client ocioso perdendo conexão), mas confirma que nada quebrou de forma
+permanente.
