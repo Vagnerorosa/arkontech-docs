@@ -980,3 +980,35 @@ disparou corretamente nos dois canais, reenvio imediato foi suprimido
 como esperado, e uma pausa real de ~1h por teto de orçamento por hora
 (esperada, não é falha) **não** gerou alerta — confirma que o limiar de
 2h absorve o ciclo normal de pacing sem falso positivo.
+
+### 17.5 Falso alarme na validação do próprio watchdog (24/07/2026) — lição de disciplina de teste
+
+Ao validar o `check-progress` (seção 17.4) antes de considerar pronto,
+o checkpoint de `attachments` foi **backdatado manualmente** (`last_progress_at
+= now() - interval '3 hours'`) direto contra o banco de produção pra
+confirmar que o alerta dispara de ponta a ponta. Funcionou exatamente
+como desenhado — **e por isso mesmo mandou um alerta real** (e-mail +
+WhatsApp, os mesmos canais de produção) dizendo "travado há 3h", quando
+o job nunca esteve travado de verdade (o último avanço real tinha sido
+~26 minutos antes do teste, dentro do ciclo normal de pausa por teto de
+orçamento por hora). Diferente do teste do canal via `test-alert`
+(seção 11), que já rotula a mensagem como "teste manual... não é um
+erro real", este teste do watchdog usou o motivo de alerta real
+(`progresso_travado_3.0h`) com dado de produção manipulado — o Vagner
+recebeu e tratou como incidente genuíno, com razão (o conteúdo da
+mensagem não dava nenhum sinal de ser teste).
+
+**Causa do falso alarme**: teste de um alerta de produção, contra estado
+de produção real, sem avisar antes que um disparo estava vindo — ao
+contrário do padrão já usado no teste do Resend (seção 11), onde o aviso
+"vou disparar um teste, é esperado" veio ANTES do disparo.
+
+**Regra adotada daqui pra frente**: testar um mecanismo de alerta contra
+dado de produção real exige, no mínimo, avisar antes que o teste vai
+gerar uma notificação real nos canais reais — mesmo que o motivo/detalhe
+pareça "óbvio" de ser artificial internamente, do lado de quem recebe
+a mensagem não há diferença nenhuma entre um alerta de teste e um real
+a menos que o conteúdo diga isso explicitamente. Alternativa mais segura
+pra próxima vez: testar contra um `task_type` fictício (não usado por
+nenhum job real) ou um ambiente isolado, em vez de manipular o
+checkpoint real de produção.
