@@ -863,3 +863,120 @@ cada 2 semanas, ou quando o Dia D dos incrementos de sync se aproximar) usando a
 metodologia da seção 14 (dado real de 30 dias, não suposição) — cada requisição que o app
 deixar de precisar vira orçamento extra pra migração, sem precisar esperar resposta do
 suporte do noCRM.
+
+## 17. Incidente do ExecStop (23/07/2026) + análise de consumo real + watchdog de progresso (24/07/2026)
+
+### 17.1 O que aconteceu (contexto, ver `rotacao-credenciais.md` para o relato completo)
+
+O job de comentários terminou de verdade às 06:59 UTC de 23/07/2026 (marco
+`extraction_milestone_complete:comments`), mas um bug nos units systemd
+(`ExecStop=/usr/bin/docker stop <nome>` sem o prefixo `-`, que falha porque
+o container `--rm` já se autorremoveu, fazendo o systemd marcar a corrida
+como "falha" mesmo com exit 0 real) entrou num loop de restart de 30 em
+30 segundos **pelo resto do dia** — e, criticamente, **nunca deixou o
+`OnSuccess=` disparar a extração de anexos**. Corrigido só na madrugada de
+24/07 (durante a rotação de credenciais, seção anterior deste documento).
+Resultado prático: **a extração de anexos perdeu quase um dia inteiro**
+sem processar nenhum lead, e ficou pausada mais um pouco durante a janela
+de troca segura da `NOCRM_API_KEY` (rotação de credenciais, ~15min).
+
+### 17.2 Consumo real vs. orçamento disponível — está sendo desperdiçado, mas não por causa do ritmo configurado
+
+Dado real (`nocrm_extraction_budget`, `nocrm_extraction_hourly_budget`),
+consultado 24/07/2026 às ~01:35 UTC:
+
+| Dia | Requisições usadas | % do orçamento disponível (~8.440/dia*) |
+|---|---|---|
+| 22/07 | 2.181 | 26% |
+| 23/07 | 2.269 | 27% |
+| 24/07 (parcial, 1ª hora) | 160 | — |
+
+\* `NOCRM_ACCOUNT_DAILY_LIMIT` (10.000) − `NOCRM_EXTRACTION_APP_RESERVED_DAILY`
+(1.560) = 8.440/dia é o teto real do job enquanto a janela de 10k/dia
+durar (até 05/08).
+
+**Isso confirma desperdício real da janela** — só ~26-27% do orçamento
+disponível foi usado nos últimos 2 dias. **Mas a causa não é o ritmo por
+hora estar configurado conservador demais**: somando o teto diurno (160/h
+× 20h = 3.200) + o teto noturno (1.280/h × 4h, janela 06h-10h UTC = 5.120),
+o teto teórico já é **8.320/dia** — a menos de 2% do orçamento real
+(8.440). Se o job rodar sem interrupção, batendo o teto por hora
+consistentemente, ele **já usa quase todo o orçamento disponível** com a
+configuração atual. Confirmado ao vivo: às 01:13 UTC de hoje o job bateu o
+teto diurno de 160/h e entrou em espera até a próxima hora (comportamento
+esperado, "orcamento POR HORA esgotado... aguardando proxima hora (pacing,
+nao e' rajada)").
+
+**Conclusão**: o desperdício dos últimos 2 dias foi 100% causado pelo
+incidente do ExecStop (job parado, não rodando) e pela pausa da rotação
+de credenciais — **não** por uma configuração de ritmo tímida. Não há
+ajuste de `NOCRM_EXTRACTION_HOURLY_BUDGET`/`_NIGHT` que resolva um job que
+não está rodando. Com o bug corrigido (23-24/07), a expectativa é que o
+consumo diário suba naturalmente para perto do teto teórico de 8.320/dia
+a partir de hoje, sem precisar tocar nos números — mas **isso ainda não
+foi confirmado com um dia inteiro rodando sem interrupção**, só coisa de
+minutos até agora.
+
+### 17.3 ETA — com alerta explícito
+
+Amostra real (24/07/2026, 54 leads já processados): **média de 8,9
+requisições/lead** (1 de listagem + ~7,9 de download em média — volume
+real bem maior do que uma estimativa grosseira de 2-3/lead). **Ressalva**:
+amostra pequena (54 de 4.128) e a fila é processada em ordem de
+prioridade (won → todo → standby, seção 6 de `fase1b-migracao-base.md`) —
+`won` tem mais chance de ter mais anexos por causa do ciclo de venda mais
+longo, então a média real pro restante da fila (mais `todo`/`standby`)
+tende a ser **igual ou menor**, não maior. Trata-se de uma estimativa
+conservadora (no sentido de "não otimista demais"), não uma medição
+definitiva — repetir esse cálculo em alguns dias com amostra maior.
+
+Com 4.074 leads pendentes (24/07, ~01:35 UTC):
+
+| Cenário | Requisições necessárias | Ritmo | Dias | Data estimada | Dentro do prazo (05/08)? |
+|---|---|---|---|---|---|
+| **Se rodar no teto teórico (8.320/dia) sem mais interrupção** | ~36.259 (4.074 × 8,9) | 8.320/dia | ~4,4 dias | **~28-29/07** | ✅ folga confortável |
+| **Se repetir o ritmo médio dos últimos 2 dias (~2.225/dia, com o bug ainda ativo em boa parte)** | ~36.259 | 2.225/dia | ~16,3 dias | **~09/08** | 🔴 **ESTOURA o prazo de 05/08** |
+
+**Recomendação**: não é preciso aumentar os tetos por hora (já calibrados
+perto do teto real) — o que importa é o job rodar **continuamente, sem
+interrupção**, dali pra frente. Reavaliar esta projeção em 2-3 dias com
+dado real de um dia inteiro sem incidente, pra confirmar se o ritmo
+efetivo realmente converge pro cenário otimista. Se, depois de corrigido
+o bug, o consumo diário real continuar bem abaixo de ~8.000/dia sem
+nenhuma interrupção nova, aí sim vale investigar se há outro gargalo
+(ex.: `interRequestDelayMs` sendo mais conservador que o necessário) —
+não é o caso identificado até agora.
+
+### 17.4 Watchdog de progresso (novo, 24/07/2026) — cobre o buraco que o circuit breaker não cobria
+
+O circuit breaker existente (taxa de erro / falhas consecutivas) **não
+detectou o incidente do ExecStop** porque, do ponto de vista do processo
+Node, cada corrida terminava com sucesso genuíno (fila vazia, exit 0) —
+o problema era inteiramente no nível do systemd, marcando esse sucesso
+como falha. Nenhum erro, nenhuma taxa de falha, nada pro circuit breaker
+perceber.
+
+**Novo comando**: `node scripts/nocrm-extraction-job.js check-progress`
+(commit `d2e011a`, `casagora-router`) — compara o `done` atual da fila
+contra um checkpoint da corrida anterior (tabela nova
+`nocrm_extraction_progress_checkpoint`, 1 linha por `task_type`). Se
+`pending > 0` e `done` não avança há mais de
+`NOCRM_EXTRACTION_STALL_ALERT_HOURS` (default **2 horas**), dispara o
+mesmo alerta de 2 canais (e-mail + WhatsApp) já usado pelo circuit
+breaker, com uma nota específica pro cenário ("processo pode estar
+travado sem erro registrado, checar systemctl/journalctl"). Reenvio
+suprimido enquanto o problema persistir (só alerta de novo depois de
+outro intervalo de 2h) — evita floodar. Quando o progresso volta sozinho,
+dispara um alerta de "normalizado".
+
+Rodado via `nocrm-extraction-watchdog.timer` (systemd, `OnUnitActiveSec=30min`) —
+ou seja, uma checagem a cada 30 minutos, com limite de alerta em 2h de
+estagnação: no pior caso, o Vagner sabe de um travamento em **até ~2h30**,
+não em um dia inteiro como aconteceu no incidente do ExecStop.
+
+**Testado ao vivo antes de considerar pronto** (backdatando o checkpoint
+artificialmente pra simular 3h sem avanço, contra produção): alerta
+disparou corretamente nos dois canais, reenvio imediato foi suprimido
+como esperado, e uma pausa real de ~1h por teto de orçamento por hora
+(esperada, não é falha) **não** gerou alerta — confirma que o limiar de
+2h absorve o ciclo normal de pacing sem falso positivo.
