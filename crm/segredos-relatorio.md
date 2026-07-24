@@ -192,3 +192,48 @@ scripts diretamente invocados por eles.
    rotação do próprio valor do token, adiado porque o Carhauler vai
    passar por reformulação completa em breve (retrabalho fazer agora).
    Ver nota em `rotacao-credenciais.md` seção 3.
+
+## Achado adicional — 23/07/2026 (exposição em runtime, não em código/git)
+
+Categoria diferente dos achados acima (que vieram de varredura de
+código/histórico git/crontab): em 23/07/2026, um comando de investigação
+numa sessão não relacionada tentou mascarar as env vars do
+`casagora_router_api` antes de exibir, mas a máscara foi escrita pro
+formato errado de saída (`docker service inspect --format '{{json
+.Spec...Env}}'` retorna array de strings `"CHAVE=valor"`, não objeto
+`{"CHAVE":"valor"}` — o regex nunca casou). Resultado: `JWT_SECRET`,
+`ADMIN_TOKEN`, `NOCRM_API_KEY`, `NOCRM_WEBHOOK_TOKEN`,
+`FACEBOOK_ACCESS_TOKEN`, `FACEBOOK_APP_SECRET`, `EVOLUTION_API_KEY`,
+`RESEND_API_KEY`, `TURNSTILE_SECRET`, `TURNSTILE_SECRET_WEBCHAT`,
+`SMTP_PASS`, `CHAVES_IMAP_PASS` e a senha do Postgres apareceram em texto
+puro no transcript de uma conversa (não em nenhum arquivo/commit/log
+persistente do sistema — a exposição foi só naquela conversa).
+
+Causa raiz completa, regra de leitura segura de segredo adotada daqui pra
+frente, e o relato integral da rotação de resposta estão em
+`rotacao-credenciais.md` (Seção 0 = causa raiz + regra nova; Seções 4/5 =
+rotação; "Histórico de execução", entrada 23-24/07/2026 = o que foi
+executado, validado e o que ainda fica pendente). Resumo do status:
+
+- ✅ **Rotacionados e validados em produção (23-24/07/2026)**:
+  `FACEBOOK_ACCESS_TOKEN` (migrado pra System User de quebra, permissões
+  reduzidas de ~50 pro mínimo real de 8), `FACEBOOK_APP_SECRET`,
+  `NOCRM_API_KEY`, `RESEND_API_KEY`. Validação incluiu monitorar o próximo
+  lead real de campanha do Facebook chegando via webhook sem nenhuma
+  rejeição.
+- ⏸️ **Pendente, decisão do Vagner**: `EVOLUTION_API_KEY` (chave global de
+  infra própria, não SaaS de terceiro — ver `rotacao-credenciais.md` 4.2).
+- ⏸️ **Pendente, aguardando janela de madrugada aprovada**: `JWT_SECRET`
+  (Seção 5 — achado importante: o frontend guarda uma cópia e verifica a
+  assinatura localmente, os dois precisam trocar quase simultâneos) e a
+  spec do `arkontech_postgres` (`POSTGRES_PASSWORD` de bootstrap, resíduo
+  já identificado em 22/07).
+- 🟡 **Residual encontrado e corrigido nesta mesma varredura** (mesmo
+  padrão dos achados de código/crontab acima, mas achado por busca
+  exaustiva por nome de variável, não pela metodologia original deste
+  relatório): arquivo órfão `/etc/casagora-router.secrets.env` com
+  permissão `644` (mundo lê) guardando cópias antigas de vários destes
+  tokens; 4 scripts em `/root/scripts/` com fallback ou valor hardcoded;
+  1 workflow inativo no n8n (`agenciadeia_n8n`) com a chave da Evolution
+  hardcoded num node. Detalhe completo em `rotacao-credenciais.md` seção
+  4.3.

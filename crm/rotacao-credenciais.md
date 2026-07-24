@@ -1040,3 +1040,97 @@ consome". A busca correta, replicável: depois de definir a senha nova,
 pré-definida) — é mais barato rodar essa varredura ampla uma vez do que
 confiar numa lista de consumidores levantada por raciocínio ("quem eu
 acho que usa isso") em vez de busca exaustiva.
+
+### 23-24/07/2026 — incidente de exposição em runtime + rotação de emergência (Seções 0/4)
+
+**Gatilho**: incidente registrado na Seção 0 — segredos expostos em texto
+puro no transcript de uma sessão de auditoria não relacionada (máscara de
+`sed` escrita pro formato errado de `docker service inspect --format
+'{{json .Env}}'`, que retorna array de strings, não objeto). Rotacionados
+em resposta: `FACEBOOK_ACCESS_TOKEN`, `FACEBOOK_APP_SECRET`, `NOCRM_API_KEY`,
+`RESEND_API_KEY` (Seção 4). `EVOLUTION_API_KEY` ficou **pendente** (decisão
+do Vagner sobre escopo global vs. por-instância, ver 4.2.1 — investigação
+do n8n mostrou 0 workflows ativos usando essa chave, risco baixo se/quando
+decidir prosseguir). `JWT_SECRET` e a spec do `arkontech_postgres` (Seção 1)
+seguem **pendentes de janela de madrugada**, não executados.
+
+**Execução**: os 4 valores gerados pelo Vagner nos painéis (Facebook/
+noCRM/Resend) + os 2 tokens de webhook auto-gerados (não usados nesta
+rodada — só os 4 "simples" foram aplicados). Aplicados via `docker service
+update --env-add` em sequência no `casagora_router_api`, mais
+`/etc/nocrm-extraction.env` (noCRM/Resend, consumidor duplicado dos jobs
+systemd).
+
+**2 bugs reais encontrados durante a validação (não durante a preparação)** —
+acabaram sendo o valor real de ter seguido o checklist de validação
+completo em vez de considerar a rotação terminada só porque os `docker
+service update` convergiram:
+
+1. **`tenant_integrations` guarda uma cópia própria das credenciais Meta**,
+   independente das env vars — `getMetaCreds()` busca primeiro a linha
+   `provider='meta'` da tabela (usada pela tela self-service
+   `/integracoes`) e só cai pro env var em campos `null`; como a linha do
+   tenant Casagora tem **todos os 8 campos preenchidos** (`access_token`,
+   `app_secret` inclusos), a troca das env vars **não teve nenhum efeito**
+   em nenhuma chamada que passa por `getMetaCreds` (praticamente toda
+   integração Meta do produto, incluindo sync de campanhas e roteador de
+   leads) — só o endpoint de introspecção (`/admin/facebook/token-status`,
+   que usa `fbGet` sem `creds`) usava o env var puro, por isso validou
+   "certo" enquanto o resto ainda usava o token/secret antigos. Descoberto
+   porque o teste de "listar campanhas ativas" (pedido explícito de
+   validação) falhou com `Invalid appsecret_proof` — se a validação tivesse
+   parado no `token-status`, esse teria sido um caso de "rotação decretada
+   completa" com o sistema real ainda usando a credencial antiga. Corrigido
+   com `jsonb_set` direto na linha (backup da linha original salvo antes,
+   ver 4.4/`/root/secrets/rotation-20260723/`).
+2. **Imagem `casagora/nocrm-extraction:latest` tinha sumido do host**
+   (não relacionado à rotação em si — causa não identificada, nenhum
+   `docker image prune` agendado encontrado) — travou a retomada do job de
+   anexos depois de pausado. Corrigido re-taggeando a partir da imagem
+   `casagora/router-api:0.9.327-mount-r2-attachments` já validada (mesmo
+   código-fonte).
+
+**Achado adicional, não bloqueante — token não é "never expires"**: o
+Facebook System User foi criado corretamente (confirmado via `debug_token`:
+`type: SYSTEM_USER`) com as 8 permissões mínimas pedidas, mas
+`expires_at` aponta pra **22/09/2026** (~60 dias), não `0`. Provavelmente
+a opção "Never" não foi marcada ao gerar o token no Business Settings.
+Não bloqueia nada agora — só significa que este token específico vai
+precisar ser trocado de novo antes de 22/09/2026, ao contrário da
+intenção original ("não expira").
+
+**Validação completa, na ordem pedida pelo Vagner**:
+1. ✅ `/admin/facebook/token-status`: `SYSTEM_USER`, 8 permissões exatas
+   (+ `public_profile`, padrão inofensivo).
+2. ✅ Leitura real: sync de campanhas (163 total/6 ativas, após corrigir o
+   bug #1 acima) + fetch de um `leadgen_id` real de produção (nome,
+   telefone, renda, FGTS retornados corretamente).
+3. ✅ Job de anexos retomado (após corrigir o bug #2 acima), processando
+   leads novos sem erro.
+4. ✅ Alerta de teste do Resend — recebido e confirmado pelo Vagner
+   (conteúdo batendo com o disparado).
+5. ✅ Confirmado pelo Vagner no navegador: "Sincronizar campanhas" (sem
+   novidade visível na tela porque não havia campanha nova — comportamento
+   esperado, já confirmado certo por trás) e download de anexo migrado
+   (deal 9885/Bruno Santos de Souza) funcionando de ponta a ponta.
+6. ✅ **Monitorado e confirmado o teste mais importante**: o próximo lead
+   real de campanha (Instagram, "DINORT Solar Veneza", lead 10194) chegou
+   via webhook, assinatura verificada com o `FACEBOOK_APP_SECRET` novo sem
+   rejeição, roteado normalmente (agente Marcia Lanzarini, `least_assigned`),
+   criado no noCRM com sucesso (`status: created_nocrm`, valida o
+   `NOCRM_API_KEY` novo também no caminho de escrita, não só extração) e
+   espelhado localmente (deal 23310). Zero silêncio de webhook — o risco
+   identificado como maior desta rotação não se concretizou.
+
+**Encerramento**: arquivos temporários (`/root/secrets/rotation-20260723/`)
+apagados com `shred -u -z` depois de todas as validações acima e o Vagner
+confirmar ter salvo os 4 valores no gerenciador de credenciais dele.
+
+**Pendências que ficam em aberto desta rotação** (registradas para não
+esquecer, nenhuma bloqueante do dia a dia):
+- `EVOLUTION_API_KEY` — decisão do Vagner (4.2.1).
+- `JWT_SECRET` — aguardando janela de madrugada aprovada (Seção 5).
+- Spec do `arkontech_postgres` (bootstrap `POSTGRES_PASSWORD` antigo) —
+  aguardando a mesma janela (Seção 1).
+- Token do Facebook expira 22/09/2026 (achado acima) — reavaliar antes
+  dessa data, ou regenerar já marcando "Never" se preferir resolver antes.
